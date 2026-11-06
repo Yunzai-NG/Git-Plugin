@@ -47,8 +47,10 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
   const mock = createMockAdapter()
   const commits = [apiCommit("baseline")]
   const requests: string[] = []
-  const fakeHttp = { async request(url: string, _options?: HttpRequestOptions) {
+  const authorizations: string[] = []
+  const fakeHttp = { async request(url: string, options?: HttpRequestOptions) {
     requests.push(url)
+    authorizations.push(String(options?.headers?.Authorization ?? ""))
     if (url.includes("/commits/")) {
       const commit = commits.find(item => item.sha === decodeURIComponent(url.split("/").at(-1) ?? ""))
       return { ok: true, status: 200, headers: {}, data: { ...structuredClone(commit),
@@ -108,6 +110,9 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     await service.idle()
     expect((await service.status())[0]?.initialized).toBe(true)
     expect(mock.sent).toHaveLength(0)
+    // 有 Token 时只查一次仓库元数据，再取 Commit 列表；没有匿名探测。
+    expect(requests).toHaveLength(2)
+    expect(authorizations).toEqual(["Bearer fixture-only-token", "Bearer fixture-only-token"])
     const newCommit = apiCommit("new-commit", "2000-01-01T00:00:00Z")
     newCommit.commit.message = "feat: new-commit\n\n详细内容\n- 按会话配置推送"
     commits.unshift(newCommit)

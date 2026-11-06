@@ -155,20 +155,12 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
   async function access(row: Subscription, config: GitConfig, signal?: AbortSignal): Promise<Access> {
     const token = tokenFor(row, config)
     const grant = grantFor(row, config)
-    let anonymous
-    try {
-      anonymous = await provider.metadata(row, "", config, signal)
-    } catch (error) {
-      // GitCode 等平台连公开元数据也要求 Token。此时携带凭据读取元数据，
-      // 仍必须证明 private=false；绝不能把「Token 可读」当成「公开」。
-      const code = errorCode(error)
-      if ((!grant && !(token && code === "401")) || !["401", "403", "404"].includes(code)) throw error
-    }
-    if (anonymous && !anonymous.public && !grant) throw new GitError("仓库不是可验证的公开仓库，请主人在面板授权此会话。", "permission")
-    if ((!anonymous?.public || grant) && !token) throw new GitError("此仓库需要配置有效 Token；非公开仓库还需会话授权。", "permission")
-    const authenticated = token ? await provider.metadata(row, token, config, signal) : anonymous
-    if (!authenticated?.public && !grant) throw new GitError("仓库已变为非公开，推送已停止，请主人授权。", "permission")
-    return { token, privateAccess: Boolean(grant), defaultBranch: authenticated?.defaultBranch || "" }
+    if (grant && !token) throw new GitError("此仓库需要配置有效 Token；非公开仓库还需会话授权。", "permission")
+    // 有 Token 直接认证查询，不先消耗共享 IP 的匿名配额；认证失败也不降级为匿名访问。
+    // Token 可读不等于允许推送：仍要求平台明确证明公开，否则必须有匹配的会话授权。
+    const metadata = await provider.metadata(row, token, config, signal)
+    if (!metadata.public && !grant) throw new GitError("仓库非公开或无法验证公开性，推送已停止，请主人授权此会话。", "permission")
+    return { token, privateAccess: Boolean(grant), defaultBranch: metadata.defaultBranch || "" }
   }
 
   async function reconcile(): Promise<void> {

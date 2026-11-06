@@ -1,6 +1,6 @@
 {
   "name": "@yunzai-ng/git-plugin",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Git-Plugin：GitHub、Gitee、GitCode 新动态订阅、面板配置与群聊/私聊推送",
   "type": "module",
   "private": true,

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest"
+import type { HttpRequestOptions } from "@yunzai-ng/types"
 import type { GitConfigInput } from "./config.js"
 import { configSchema } from "./config.js"
 import { cardPage, messageContent } from "./display.js"
 import plugin from "./index.js"
 import { GitError, PLATFORM_KEYS, subscriptionId } from "./model.js"
 import { createProvider } from "./providers.js"
-import type { RepoMetadata } from "./providers.js"
+import type { ProviderResponse, RepoMetadata } from "./providers.js"
 import { createGitService } from "./service.js"
 import type { GitService, SubState } from "./service.js"
 import { apiCommit, chats, event, fakeProvider, harness, row } from "./test-helpers.js"
@@ -102,6 +103,97 @@ describe("createGitService", () => {
     expect((await service.status())[0]?.pending).toBe(0)
     expect(h.sent).toHaveLength(0)
     expect(h.warnings.join("\n")).not.toContain("secret")
+  })
+
+  it.each(PLATFORM_KEYS)("%s：默认和命名 Token 都直接认证查询，每轮跨会话复用请求，不发匿名探测", async platform => {
+    for (const named of [false, true]) {
+      const a = row({ platform, credential: named ? "selected" : "" }), b = { ...a, targetId: "456" }
+      const h = harness({ chats: chats(a, b), ...(named ? { credentials: [{ name: "selected", platform, token: "selected-token" }] } : { tokens: { [platform]: "selected-token" } }) })
+      const requests: { url: string, authorization: string }[] = []
+      const provider = createProvider({ async request(url, options?: HttpRequestOptions): Promise<ProviderResponse> {
+        const authorization = String(options?.headers?.Authorization ?? "")
+        requests.push({ url, authorization })
+        if (!authorization) return { ok: false, status: 429, headers: { "retry-after": "3600" }, data: {} }
+        return { ok: true, status: 200, headers: {}, data: url.endsWith("/commits") ? [apiCommit("baseline")] :
+          /\/(issues|pulls|releases)$/.test(url) ? [] : { private: false, default_branch: "main" } }
+      } })
+      const service = createGitService(h.ctx, { provider })
+      await service.tick()
+      await service.tick()
+      expect((await service.status()).every(item => item.initialized && !item.error)).toBe(true)
+      // 每轮一个元数据请求 + 四类列表，同一仓库订阅到两个会话不重复请求。
+      expect(requests).toHaveLength(10)
+      expect(requests.filter(item => item.url.endsWith(`/${a.repo}`))).toHaveLength(2)
+      expect(requests.every(item => item.authorization === "Bearer selected-token")).toBe(true)
+      expect(h.sent).toHaveLength(0)
+    }
+  })
+
+  it("匿名配额已耗尽不阻塞另一个有 Token 的订阅，认证范围仍独立退避", async () => {
+    const anonymous = row({ events: ["commit"] }), authenticated = row({ events: ["commit"], credential: "selected", targetId: "456" })
+    const h = harness({ chats: chats(anonymous, authenticated), credentials: [{ name: "selected", platform: "github", token: "selected-token" }] })
+    const authorizations: string[] = []
+    const provider = createProvider({ async request(url, options?: HttpRequestOptions): Promise<ProviderResponse> {
+      const authorization = String(options?.headers?.Authorization ?? "")
+      authorizations.push(authorization)
+      return authorization ? { ok: true, status: 200, headers: {}, data: url.endsWith("/commits") ? [apiCommit("baseline")] : { private: false } } :
+        { ok: false, status: 429, headers: { "retry-after": "3600" }, data: {} }
+    } })
+    const service = createGitService(h.ctx, { provider })
+    await service.tick()
+    expect((await service.status())[0]?.error).toMatch(/配额/)
+    expect((await service.status())[1]).toMatchObject({ initialized: true, error: "" })
+    expect(authorizations).toEqual(["", "Bearer selected-token", "Bearer selected-token"])
+    await service.tick()
+    expect((await service.status())[0]?.error).toMatch(/退避/)
+    expect((await service.status())[1]?.error).toBe("")
+    expect(authorizations.filter(value => !value)).toHaveLength(1)
+  })
+
+  it("Token 请求被拒绝时不降级匿名探测，也不推进基线或泄露凭据", async () => {
+    for (const status of [401, 403, 404]) {
+      const h = harness({ chats: chats(row({ events: ["commit"] })), tokens: { github: "invalid-token-value" } })
+      const authorizations: string[] = []
+      const provider = createProvider({ async request(_url, options?: HttpRequestOptions) {
+        const authorization = String(options?.headers?.Authorization ?? "")
+        authorizations.push(authorization)
+        return authorization ? { ok: false, status, data: "invalid-token-value" } : { ok: true, status: 200, data: { private: false } }
+      } })
+      const service = createGitService(h.ctx, { provider })
+      await service.tick()
+      expect(authorizations).toEqual(["Bearer invalid-token-value"])
+      expect((await service.status())[0]?.initialized).toBe(false)
+      expect((await service.status())[0]?.error).toBeTruthy()
+      expect(h.sent).toHaveLength(0)
+      expect(h.warnings.join("\n")).not.toContain("invalid-token-value")
+    }
+  })
+
+  it("认证可读的私有或公开标记不明仓库，没有会话授权仍不扫描", async () => {
+    for (const metadata of [{ private: true }, {}, { private: false, visibility: "private" }]) {
+      const h = harness({ chats: chats(row({ events: ["commit"] })), tokens: { github: "selected-token" } })
+      let requests = 0
+      const provider = createProvider({ async request() { requests++; return { ok: true, status: 200, data: metadata } } })
+      const service = createGitService(h.ctx, { provider })
+      await service.tick()
+      expect(requests).toBe(1)
+      expect((await service.status())[0]).toMatchObject({ initialized: false, error: expect.stringMatching(/非公开|公开性/) })
+      expect(h.sent).toHaveLength(0)
+    }
+  })
+
+  it("私有授权没有有效 Token 时提前拒绝，不尝试匿名查询", async () => {
+    const sub = row({ events: ["commit"] })
+    const h = harness({ chats: chats(sub), privateRepositories: [{ platform: sub.platform, repo: sub.repo, credential: "",
+      targets: [{ accountId: sub.accountId, scene: sub.scene, targetId: sub.targetId }] }] })
+    const provider = fakeProvider()
+    let metadataCalls = 0
+    provider.metadata = async () => { metadataCalls++; return { public: false } }
+    const service = createGitService(h.ctx, { provider })
+    await service.tick()
+    expect(metadataCalls).toBe(0)
+    expect(provider.calls).toHaveLength(0)
+    expect((await service.status())[0]?.error).toMatch(/Token/)
   })
 
   it("新增的事件类型单独建立基线；关掉的类型移除其待发", async () => {

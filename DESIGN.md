@@ -47,6 +47,6 @@ Commit 保留 18px 标题与元信息行，下面分成两个独立区域：
 
 ## 验证
 
-用本机 Edge 无头模式按渲染器同样的方式（视口 600、`deviceScaleFactor: 2`、截 `#container`）出图，人工检查：常规 5 条四类型、10 条长标题长仓库名长分支、单条 Release、超长标题与 HTML 转义与缺失时间与跨年时间。另检查头像：真实 GitHub 头像、首字母回退、非白名单地址与 `javascript:` 地址被拒绝。`pnpm run verify`（构建、测试类型检查、ESLint、48 项 vitest）通过。
+用本机 Edge 无头模式按渲染器同样的方式（视口 600、`deviceScaleFactor: 2`、截 `#container`）出图，人工检查：常规 5 条四类型、10 条长标题长仓库名长分支、单条 Release、超长标题与 HTML 转义与缺失时间与跨年时间。另检查头像：真实 GitHub 头像、首字母回退、非白名单地址与 `javascript:` 地址被拒绝。`pnpm run verify`（构建、测试类型检查、ESLint、55 项 vitest）通过。
 
 `design/variants/` 是更早的四套探索方案，未采用，保留作参考。
