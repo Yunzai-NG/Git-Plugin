@@ -31,6 +31,9 @@ export interface DisplayRow {
 
 const heading = (row: DisplayRow) => `${PLATFORMS[row.platform].name} · ${row.repo}${row.branch ? ` · ${row.branch}` : ""}`
 const count = (value: number | undefined, sign: "+" | "−") => value === undefined ? "—" : `${sign}${value}`
+/** 卡片的增删数字按语义着色；未知数值保持中性色，符号仍保留 */
+const coloredCount: typeof count = (value, sign) => value === undefined ? "—" :
+  `<span class="${sign === "+" ? "additions" : "deletions"}">${escape(count(value, sign))}</span>`
 const filename = (file: CommitFile) => file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename
 
 /** 正文只展示摘要；保留分行，避免单个提交把整批图片撑得过长 */
@@ -39,11 +42,11 @@ function descriptionPreview(event: GitEvent): string {
 }
 
 /** 总增删统计使用平台的提交级数据，不从截断的文件列表估算 */
-function changeSummary(event: GitEvent): string {
+function changeSummary(event: GitEvent, formatCount = count): string {
   const changes = event.changes
   if (!changes) return "增删详情暂不可用"
   return [changes.fileCount === undefined ? "文件总数未提供" : `${changes.fileCount} 个文件`,
-    `新增 ${count(changes.additions, "+")} 行`, `删除 ${count(changes.deletions, "−")} 行`].join(" · ")
+    `新增 ${formatCount(changes.additions, "+")} 行`, `删除 ${formatCount(changes.deletions, "−")} 行`].join(" · ")
 }
 
 /** 文件明细的截断提示：不把当前页长度假装成完整文件总数 */
@@ -116,9 +119,9 @@ function commitDetails(event: GitEvent): string {
   const files = event.changes?.files.slice(0, 8) ?? []
   const remainder = fileRemainder(event)
   return `${description ? `<section class="commit-description"><p class="detail-label">详细内容</p><p class="description">${escape(description)}</p></section>` : ""}
-    <section class="commit-changes"><p class="detail-label">变更详情</p><p class="change-summary">${escape(changeSummary(event))}</p>
+    <section class="commit-changes"><p class="detail-label">变更详情</p><p class="change-summary">${changeSummary(event, coloredCount)}</p>
       ${files.length ? `<div class="files"><div class="file-head"><span>文件</span><span>新增</span><span>删除</span></div>${files.map(file =>
-        `<div class="file-row"><span class="file-name mono">${escape(cleanText(filename(file), 500))}</span><span class="file-count mono">${escape(count(file.additions, "+"))}</span><span class="file-count mono">${escape(count(file.deletions, "−"))}</span></div>`).join("")}</div>` : ""}
+        `<div class="file-row"><span class="file-name mono">${escape(cleanText(filename(file), 500))}</span><span class="file-count mono">${coloredCount(file.additions, "+")}</span><span class="file-count mono">${coloredCount(file.deletions, "−")}</span></div>`).join("")}</div>` : ""}
       ${remainder ? `<p class="detail-note">${escape(remainder)}</p>` : ""}
     </section>`
 }
@@ -198,6 +201,7 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], { now = D
     .detail-label{margin-bottom:5px;font-size:12px;font-weight:600;color:#647186}
     .description{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:8;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.65;color:#3d4757}
     .change-summary{font-size:13px;color:#3d4757;font-variant-numeric:tabular-nums}
+    .additions{color:#1a7f37}.deletions{color:#991b1b}
     .files{margin-top:8px;padding:6px 10px;background:#f6f8fa;border:1px solid #edf0f4;border-radius:8px}
     .file-head,.file-row{display:grid;grid-template-columns:minmax(0,1fr) 62px 62px;gap:8px;align-items:start;padding:5px 0}
     .file-head{font-size:11px;color:#647186}.file-head span:not(:first-child){text-align:right}
