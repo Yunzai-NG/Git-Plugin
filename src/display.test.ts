@@ -57,6 +57,51 @@ describe("Commit 推送卡片", () => {
     expect(html).toContain("white-space:pre-wrap")
   })
 
+  it.each([1, 2, 3])("同图 %i 条 Commit：两条以内展开文件表，超过两条仅保留正文和总统计", amount => {
+    const events = Array.from({ length: amount }, (_, i) => ({ ...commit(), id: `commit-${i}` }))
+    const html = cardPage(row(), events).html
+    expect(html.match(/class="title"/g)).toHaveLength(amount)
+    expect(html.match(/class="commit-description"/g)).toHaveLength(amount)
+    expect(html.match(/class="additions">\+241/g)).toHaveLength(amount)
+    expect(html.match(/class="deletions">−100/g)).toHaveLength(amount)
+    expect(html.match(/class="files"/g) ?? []).toHaveLength(amount > 2 ? 0 : amount)
+    if (amount > 2) {
+      expect(html).not.toContain("src/config.ts")
+      expect(html).not.toContain("另有 12 个文件")
+      expect(html.match(/文件明细已收起/g)).toHaveLength(amount)
+    } else {
+      expect(html).toContain("src/config.ts")
+      expect(html).not.toContain("文件明细已收起")
+    }
+  })
+
+  it("混合动态按 Commit 数量而非总条数决定是否收起文件", () => {
+    const two = [{ ...commit(), id: "a" }, { ...commit(), id: "b" }, event("1", "issue"), event("2", "pr")]
+    expect(cardPage(row(), two).html.match(/class="files"/g)).toHaveLength(2)
+    const three = [...two, { ...commit(), id: "c" }]
+    const html = cardPage(row(), three).html
+    expect(html).not.toContain('class="files"')
+    expect(html.match(/文件明细已收起/g)).toHaveLength(3)
+    expect(html).toContain("title 1")
+    expect(html).toContain("title 2")
+  })
+
+  it("无明细的提交仍提示不可用；收起只影响图片，不修改事件或文字回退", async () => {
+    const events = [commit(), { ...commit(), id: "second" }, event("unknown")]
+    const original = structuredClone(events)
+    const html = cardPage(row(), events).html
+    expect(html).toContain("增删详情暂不可用")
+    expect(html.match(/文件明细已收起/g)).toHaveLength(2)
+    expect(html).not.toContain('class="files"')
+    expect(events).toEqual(original)
+    const h = harness()
+    const fallback = await messageContent(h.ctx, row({ format: "image" }), h.ctx.config.get(), events)
+    expect(fallback).toBe(textDigest(row(), events))
+    expect(fallback).toContain("src/config.ts  +46 / −16")
+    expect(fallback).not.toContain("文件明细已收起")
+    expect(events).toEqual(original)
+  })
+
   it("正文与文件路径不解析为 HTML；长正文限行，明细最多 8 个文件", () => {
     const input = commit()
     input.description = "<script>alert(1)</script>\n" + Array.from({ length: 100 }, (_, i) => `body-${i}`).join("\n")

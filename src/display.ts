@@ -117,14 +117,14 @@ function face(author: string, picture: string | undefined): string {
 }
 
 /** Commit 标题之外的正文、提交级增删汇总及文件明细；全部只作为纯文本 */
-function commitDetails(event: GitEvent): string {
+function commitDetails(event: GitEvent, showFiles: boolean): string {
   if (event.type !== "commit") return ""
   const description = descriptionPreview(event)
   const files = event.changes?.files.slice(0, 8) ?? []
-  const remainder = fileRemainder(event)
+  const remainder = !showFiles && files.length ? "文件明细已收起，完整明细见提交链接。" : fileRemainder(event)
   return `${description ? `<section class="commit-description"><p class="detail-label">详细内容</p><p class="description">${escape(description)}</p></section>` : ""}
     <section class="commit-changes"><p class="detail-label">变更详情</p><p class="change-summary">${changeSummary(event, coloredCount)}</p>
-      ${files.length ? `<div class="files"><div class="file-head"><span>文件</span><span>新增</span><span>删除</span></div>${files.map(file =>
+      ${showFiles && files.length ? `<div class="files"><div class="file-head"><span>文件</span><span>新增</span><span>删除</span></div>${files.map(file =>
         `<div class="file-row"><span class="file-name mono">${escape(cleanText(filename(file), 500))}</span><span class="file-count mono">${coloredCount(file.additions, "+")}</span><span class="file-count mono">${coloredCount(file.deletions, "−")}</span></div>`).join("")}</div>` : ""}
       ${remainder ? `<p class="detail-note">${escape(remainder)}</p>` : ""}
     </section>`
@@ -157,6 +157,8 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], {
   now = Date.now(), avatars = new Map(), pluginVersion = "未知", frameworkVersion = "未知"
 }: CardOptions = {}): RenderablePage {
   const [owner = "", ...rest] = row.repo.split("/")
+  // 只按本张图的 Commit 数量判断；混入其他类型不影响两条以内的文件展示。
+  const showFiles = events.filter(event => event.type === "commit").length <= 2
   const types = (Object.keys(kinds) as EventType[]).filter(type => events.some(event => event.type === type))
   // 只有一种类型时右上角的总数已经够用，不再重复一行统计。
   const stats = types.length > 1 ? `<div class="stats">${types.map(type => `<span class="stat"><i style="background:${kinds[type].dot}"></i><b>${
@@ -171,7 +173,7 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], {
     return `<li class="item" style="--fg:${kind.fg};--bg:${kind.bg}"><span class="avatar">${face(event.author, picture)}<span class="kind">${svg(kind.icon)}</span></span><div class="body">
       <h2 class="title">${escape(cleanText(event.title, 160))}</h2>
       <div class="meta"><span class="badge">${kind.name}</span>${id ? `<span class="id mono">${escape(id)}</span>` : ""}<span class="author">${escape(event.author)}</span><span class="time">${escape(shortDate(event.time, now))}</span></div>
-      ${commitDetails(event)}
+      ${commitDetails(event, showFiles)}
     </div></li>`
   }).join("")
   return cardShell("git-digest", `${row.repo} · Git 动态`, `
