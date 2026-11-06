@@ -1,0 +1,42 @@
+# 面板：插件 → git-plugin → 配置。复制为 <NG 主目录>/config/git-plugin.yaml 后修改。
+enabled: true
+intervalSeconds: 300
+timeoutSeconds: 20
+defaultEvents: [commit, issue, pr, release]
+defaultFormat: text
+tokens:
+  github: ""
+  gitee: ""
+  gitcode: ""
+credentials: []
+subscriptions: []
+privateRepositories: []
+
+# 公开仓库推送示例（把 subscriptions: [] 替换为以下列表）：
+# subscriptions:
+#   - enabled: true
+#     remark: Yunzai NG 更新
+#     platform: github
+#     repo: Yunzai-NG/yunzai-ng
+#     branch: ""                  # 空值跟踪默认分支；仅 Commit 使用
+#     events: [commit, release]   # [] 使用 defaultEvents
+#     format: default            # default / text / image
+#     credential: ""             # 空值使用 tokens.github
+#     accountId: 替换成NG账号记录UUID
+#     scene: group               # group / private
+#     targetId: "123456789"       # 群号或用户 ID，始终使用字符串
+
+# 私有仓库需在订阅之外授权对应会话：
+# credentials:
+#   - name: work
+#     platform: github
+#     token: 替换成自己的Token
+# privateRepositories:
+#   - platform: github
+#     repo: your-org/private-repo
+#     credential: work
+#     targets:
+#       - accountId: 替换成NG账号记录UUID
+#         scene: group
+#         targetId: "123456789"
+# 对应 subscriptions 项的 repo、credential、accountId、scene、targetId 必须匹配。

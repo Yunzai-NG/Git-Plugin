@@ -1,0 +1,92 @@
+[
+  {
+    "key": "a",
+    "width": 800,
+    "documentWidth": 800,
+    "overflowing": []
+  },
+  {
+    "key": "a",
+    "width": 1280,
+    "documentWidth": 1280,
+    "overflowing": []
+  },
+  {
+    "key": "a",
+    "width": 375,
+    "documentWidth": 375,
+    "overflowing": []
+  },
+  {
+    "key": "b",
+    "width": 800,
+    "documentWidth": 800,
+    "overflowing": []
+  },
+  {
+    "key": "b",
+    "width": 1280,
+    "documentWidth": 1280,
+    "overflowing": []
+  },
+  {
+    "key": "b",
+    "width": 375,
+    "documentWidth": 375,
+    "overflowing": []
+  },
+  {
+    "key": "c",
+    "width": 800,
+    "documentWidth": 800,
+    "overflowing": []
+  },
+  {
+    "key": "c",
+    "width": 1280,
+    "documentWidth": 1280,
+    "overflowing": []
+  },
+  {
+    "key": "c",
+    "width": 375,
+    "documentWidth": 375,
+    "overflowing": []
+  },
+  {
+    "key": "d",
+    "width": 800,
+    "documentWidth": 800,
+    "overflowing": []
+  },
+  {
+    "key": "d",
+    "width": 1280,
+    "documentWidth": 1280,
+    "overflowing": []
+  },
+  {
+    "key": "d",
+    "width": 375,
+    "documentWidth": 375,
+    "overflowing": []
+  },
+  {
+    "key": "preview",
+    "width": 1600,
+    "documentWidth": 1600,
+    "overflowing": []
+  },
+  {
+    "key": "preview",
+    "width": 1280,
+    "documentWidth": 1280,
+    "overflowing": []
+  },
+  {
+    "key": "preview",
+    "width": 375,
+    "documentWidth": 375,
+    "overflowing": []
+  }
+]

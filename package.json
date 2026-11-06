@@ -1,0 +1,49 @@
+{
+  "name": "@yunzai-ng/git-plugin",
+  "version": "0.2.0",
+  "description": "Git-Plugin：GitHub、Gitee、GitCode 新动态订阅、面板配置与群聊/私聊推送",
+  "type": "module",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "yunzai": {
+    "name": "git-plugin"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "tsc -b",
+    "build:clean": "tsc -b --clean",
+    "link:framework": "node scripts/link-framework.mjs",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "verify": "pnpm run build && pnpm run typecheck:test && pnpm run lint && pnpm run test"
+  },
+  "peerDependencies": {
+    "@yunzai-ng/core": ">=0.7.0",
+    "@yunzai-ng/types": ">=0.4.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "eslint-plugin-jsdoc": "^50.6.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
