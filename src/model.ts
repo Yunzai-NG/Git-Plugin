@@ -37,6 +37,32 @@ export const PLATFORM_KEYS = Object.keys(PLATFORMS) as Platform[]
 /** 可订阅的新动态 */
 export const EVENTS = ["commit", "issue", "pr", "release"] as const satisfies readonly EventType[]
 
+/** Commit 的单个文件变更；不保存代码 diff */
+export interface CommitFile {
+  /** 文件路径 */
+  filename: string
+  /** 重命名前的文件路径，平台未提供时为空 */
+  previousFilename?: string
+  /** 新增行数，平台未提供时为 undefined，不能当作 0 */
+  additions?: number
+  /** 删除行数，平台未提供时为 undefined，不能当作 0 */
+  deletions?: number
+}
+
+/** Commit 详情接口提供的增删统计；文件明细只保留前 8 个 */
+export interface CommitChanges {
+  /** 整个提交的新增行数 */
+  additions?: number
+  /** 整个提交的删除行数 */
+  deletions?: number
+  /** 完整文件总数；平台分页或截断时无法确定，不用当前页长度冒充 */
+  fileCount?: number
+  /** 已获取的部分文件明细 */
+  files: CommitFile[]
+  /** 文件明细未全部展示，完整内容见提交链接 */
+  filesTruncated: boolean
+}
+
 /** 归一化后的一条动态；与抓取进度一起持久化在 KV 的待发队列里 */
 export interface GitEvent {
   /** Commit 为 SHA，Issue/PR 为编号，Release 为平台 id 或标签名 */
@@ -53,6 +79,12 @@ export interface GitEvent {
   author: string
   /** 作者头像地址，已校验为官方头像 CDN；旧版本入队的记录没有此字段 */
   avatar?: string
+  /** Commit 第一行之后的详细正文，保留换行并限长；其他动态无此字段 */
+  description?: string
+  /** Commit 的增删行数与文件明细，详情查询失败时无此字段 */
+  changes?: CommitChanges
+  /** 已成功查询 Commit 详情，队列重试时不再重复请求 */
+  commitDetailsLoaded?: boolean
 }
 
 /** 订阅的会话身份：精确的机器人账号记录与接收会话 */
@@ -178,6 +210,19 @@ export function tokenFor(row: Subscription, config: GitConfig): string {
 export const cleanText = (value: unknown, limit = 240): string =>
   // eslint-disable-next-line no-control-regex -- 有意移除远端文本的控制字符。
   String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit)
+
+/**
+ * 清理提交正文：保留换行，不渲染 Markdown、HTML 或代码；限制队列与图片体积
+ * @param value 原始正文
+ * @param limit 最大字符数
+ * @returns 去除控制字符并限长的多行纯文本
+ */
+export function cleanBody(value: unknown, limit = 2048): string {
+  return String(value ?? "").replace(/\r\n?/g, "\n")
+    // eslint-disable-next-line no-control-regex -- 保留换行和制表符，其余控制字符移除。
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim().slice(0, limit)
+}
 
 /** 插件定义的错误：只有它的文案会出现在聊天和面板里 */
 export class GitError extends Error {

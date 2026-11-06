@@ -246,7 +246,20 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
         else {
           for (let batch = 0; batch < 3 && state.pending.length; batch++) {
             if (!active(id, config) || signal?.aborted) break
-            const events = state.pending.slice(0, 10)
+            const imageFormat = (row.format === "default" ? config.defaultFormat : row.format) === "image"
+            // Commit 有正文和逐文件表格，十条会变成超长图；图片每批含 Commit 时最多三条。
+            const limit = imageFormat && state.pending.slice(0, 10).some(event => event.type === "commit") ? 3 : 10
+            const pending = state.pending.slice(0, limit)
+            // 只为当前要发的 Commit 查询详情，不给初始化或全部积压逐条请求；同轮跨会话复用响应。
+            const events = await Promise.all(pending.map(event => event.type === "commit" && !event.commitDetailsLoaded
+              ? provider.commitDetail(row, permission.token, config, event, signal).catch(() => event)
+              : event))
+            if (!active(id, config) || signal?.aborted) break
+            if (events.some((event, index) => event !== pending[index])) {
+              state.pending.splice(0, events.length, ...events)
+              // 成功查到的详情也随队列落盘，发送失败或重启不必重新查；写失败时绝不继续发送。
+              await save()
+            }
             const content = await messageContent(ctx, row, config, events, avatars)
             if (!active(id, config) || signal?.aborted) break
             try {

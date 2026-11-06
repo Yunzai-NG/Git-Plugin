@@ -106,3 +106,72 @@ describe("normalizeEvent", () => {
     expect(normalizeEvent("gitee", "a/b", "issue", { number: 1, created_at, user: { avatar_url: "https://gitee.com/assets/no_portrait.png" } })?.avatar).toBe("")
   })
 })
+
+describe("Commit 详情", () => {
+  it("第一行为标题，正文保留换行；清理控制字符并限制长度", () => {
+    const raw = apiCommit("new")
+    raw.commit.message = "feat: 新功能\r\n\r\n详细说明\r\n- 新增 A\u0000\n- 删除 B"
+    const parsed = normalizeEvent("github", "a/b", "commit", raw)!
+    expect(parsed.title).toBe("feat: 新功能")
+    expect(parsed.description).toBe("详细说明\n- 新增 A\n- 删除 B")
+    raw.commit.message = "title\n\n" + "x".repeat(5000)
+    expect(normalizeEvent("github", "a/b", "commit", raw)?.description).toHaveLength(2048)
+    expect(normalizeEvent("github", "a/b", "commit", apiCommit("single"))?.description).toBe("")
+  })
+
+  it("三平台按 SHA 查询详情并共用同轮请求；保留完整统计、前 8 个文件，不存 patch", async () => {
+    for (const platform of PLATFORM_KEYS) {
+      const calls: { url: string, options?: HttpRequestOptions }[] = []
+      const raw = { ...apiCommit("new"), stats: { additions: 241, deletions: 100 },
+        files: Array.from({ length: 14 }, (_, index) => ({ filename: `src/file-${index}.ts`, additions: index, deletions: 1,
+          ...(index === 0 ? { previous_filename: "src/old.ts" } : {}), patch: "very large diff" })) }
+      raw.commit.message = "feat!: 新功能\n\n详细说明\n\nBREAKING CHANGE: 配置改变"
+      const provider = createProvider({ async request(url, options) {
+        calls.push({ url, options })
+        return { ok: true, headers: {}, data: raw }
+      } })
+      const original = normalizeEvent(platform, "owner/repo", "commit", apiCommit("new"))!
+      const [first, second] = await Promise.all([
+        provider.commitDetail(row({ platform }), "secret", config, original),
+        provider.commitDetail(row({ platform, targetId: "456" }), "secret", config, original)
+      ])
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.url).toBe(`${PLATFORMS[platform].api}/repos/owner/repo/commits/new`)
+      expect(calls[0]?.options?.headers?.Authorization).toBe("Bearer secret")
+      expect(calls[0]?.options?.followRedirect).toBe(false)
+      expect(first.title).toBe("feat!: 新功能")
+      expect(first.description).toBe("详细说明\n\nBREAKING CHANGE: 配置改变")
+      expect(first.changes).toMatchObject({ additions: 241, deletions: 100, fileCount: 14, filesTruncated: true })
+      expect(first.changes?.files).toHaveLength(8)
+      expect(first.changes?.files[0]).toEqual({ filename: "src/file-0.ts", previousFilename: "src/old.ts", additions: 0, deletions: 1 })
+      expect(JSON.stringify(first)).not.toContain("very large diff")
+      expect(first).toEqual(second)
+      expect(first.commitDetailsLoaded).toBe(true)
+      expect(original.commitDetailsLoaded).toBeUndefined()
+      provider.beginRound()
+      await provider.commitDetail(row({ platform }), "secret", config, first)
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  it("文件分页或平台截断时不谎报总数；未知行数、负数不是零", async () => {
+    const headersList: Record<string, string>[] = [{ link: '<https://api.github.com/next>; rel="next"' }, {}]
+    for (const headers of headersList) {
+      const provider = createProvider({ async request() {
+        return { ok: true, headers, data: { ...apiCommit("new"), truncated: !headers.link,
+          stats: { additions: -1, deletions: "100" }, files: [{ filename: "image.png" }, { filename: "zero.ts", additions: 0, deletions: 0 }] } }
+      } })
+      const result = await provider.commitDetail(row(), "", config, normalizeEvent("github", "owner/repo", "commit", apiCommit("new"))!)
+      expect(result.changes).toMatchObject({ fileCount: undefined, additions: undefined, deletions: undefined, filesTruncated: true })
+      expect(result.changes?.files[0]?.additions).toBeUndefined()
+      expect(result.changes?.files[1]?.additions).toBe(0)
+    }
+  })
+
+  it("详情格式错误、SHA 不匹配、网络失败都不会变成有效统计", async () => {
+    for (const data of [[], { private: false }, { ...apiCommit("other"), stats: { additions: 1, deletions: 1 } }]) {
+      const provider = createProvider({ request: async () => ({ ok: true, data }) })
+      await expect(provider.commitDetail(row(), "", config, normalizeEvent("github", "owner/repo", "commit", apiCommit("new"))!)).rejects.toThrow()
+    }
+  })
+})

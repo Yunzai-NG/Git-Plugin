@@ -8,8 +8,8 @@
  */
 import type { Logger, MessageContent, RenderOptions, RenderablePage, RenderedImage } from "@yunzai-ng/types"
 import type { AvatarLoader } from "./avatars.js"
-import { PLATFORMS, cleanText } from "./model.js"
-import type { EventType, GitEvent, Platform } from "./model.js"
+import { PLATFORMS, cleanBody, cleanText } from "./model.js"
+import type { CommitFile, EventType, GitEvent, Platform } from "./model.js"
 
 const labels: Readonly<Record<EventType, string>> = { commit: "新 Commit", issue: "新 Issue", pr: "新 PR", release: "新 Release" }
 const date = (time: number) => time ? new Date(time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "时间未提供"
@@ -30,6 +30,29 @@ export interface DisplayRow {
 }
 
 const heading = (row: DisplayRow) => `${PLATFORMS[row.platform].name} · ${row.repo}${row.branch ? ` · ${row.branch}` : ""}`
+const count = (value: number | undefined, sign: "+" | "−") => value === undefined ? "—" : `${sign}${value}`
+const filename = (file: CommitFile) => file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename
+
+/** 正文只展示摘要；保留分行，避免单个提交把整批图片撑得过长 */
+function descriptionPreview(event: GitEvent): string {
+  return cleanBody(event.description, 1200).split("\n").slice(0, 8).join("\n")
+}
+
+/** 总增删统计使用平台的提交级数据，不从截断的文件列表估算 */
+function changeSummary(event: GitEvent): string {
+  const changes = event.changes
+  if (!changes) return "增删详情暂不可用"
+  return [changes.fileCount === undefined ? "文件总数未提供" : `${changes.fileCount} 个文件`,
+    `新增 ${count(changes.additions, "+")} 行`, `删除 ${count(changes.deletions, "−")} 行`].join(" · ")
+}
+
+/** 文件明细的截断提示：不把当前页长度假装成完整文件总数 */
+function fileRemainder(event: GitEvent): string {
+  const changes = event.changes
+  if (!changes?.filesTruncated) return ""
+  const left = changes.fileCount === undefined ? undefined : Math.max(0, changes.fileCount - Math.min(changes.files.length, 8))
+  return left === undefined ? "仅展示部分文件，完整明细见提交链接。" : `另有 ${left} 个文件，完整明细见提交链接。`
+}
 
 /**
  * 生成纯文字摘要，动态标题不按 Markdown 或消息段解析
@@ -38,8 +61,12 @@ const heading = (row: DisplayRow) => `${PLATFORMS[row.platform].name} · ${row.r
  * @returns 文字摘要
  */
 export function textDigest(row: DisplayRow, events: readonly GitEvent[]): string {
-  return [`Git 动态 | ${heading(row)}`, ...events.map(event =>
-    `${labels[event.type]} ${code(event)} · ${cleanText(event.title, 120)}\n${event.author} · ${date(event.time)}\n${event.url}`)].join("\n\n")
+  return [`Git 动态 | ${heading(row)}`, ...events.map(event => {
+    const details = event.type === "commit" ? [event.description ? `详细内容：\n${descriptionPreview(event)}` : "", `变更详情：${changeSummary(event)}`,
+      ...(event.changes?.files.slice(0, 8).map(file => `${cleanText(filename(file), 500)}  ${count(file.additions, "+")} / ${count(file.deletions, "−")}`) ?? []),
+      fileRemainder(event)].filter(Boolean).join("\n") : ""
+    return `${labels[event.type]} ${code(event)} · ${cleanText(event.title, 120)}\n${event.author} · ${date(event.time)}${details ? `\n\n${details}` : ""}\n${event.url}`
+  })].join("\n\n")
 }
 
 /** 卡片宽度（CSS 像素）与出图倍率：600 × 2 = 1200px 宽 */
@@ -82,6 +109,20 @@ function face(author: string, picture: string | undefined): string {
   return `<span class="face initial" style="background:${color}">${escape((chars[0] ?? "?").toUpperCase())}</span>`
 }
 
+/** Commit 标题之外的正文、提交级增删汇总及文件明细；全部只作为纯文本 */
+function commitDetails(event: GitEvent): string {
+  if (event.type !== "commit") return ""
+  const description = descriptionPreview(event)
+  const files = event.changes?.files.slice(0, 8) ?? []
+  const remainder = fileRemainder(event)
+  return `${description ? `<section class="commit-description"><p class="detail-label">详细内容</p><p class="description">${escape(description)}</p></section>` : ""}
+    <section class="commit-changes"><p class="detail-label">变更详情</p><p class="change-summary">${escape(changeSummary(event))}</p>
+      ${files.length ? `<div class="files"><div class="file-head"><span>文件</span><span>新增</span><span>删除</span></div>${files.map(file =>
+        `<div class="file-row"><span class="file-name mono">${escape(cleanText(filename(file), 500))}</span><span class="file-count mono">${escape(count(file.additions, "+"))}</span><span class="file-count mono">${escape(count(file.deletions, "−"))}</span></div>`).join("")}</div>` : ""}
+      ${remainder ? `<p class="detail-note">${escape(remainder)}</p>` : ""}
+    </section>`
+}
+
 /** 卡片选项 */
 export interface CardOptions {
   /** 当前时间，决定日期是否带年份 */
@@ -94,7 +135,8 @@ export interface CardOptions {
  * 自包含动态卡片（图片推送用）
  *
  * 深色页头放平台、分支、仓库和数量；正文每条动态一行：作者头像（右下角为类型图标）、
- * 标题（最多两行）、类型、编号、作者、时间。四种类型各有一套颜色，扫一眼即可分辨。
+ * 标题（最多两行）、类型、编号、作者、时间；Commit 另列多行正文与增删明细。
+ * 四种类型各有一套颜色，扫一眼即可分辨。
  * @param row 订阅
  * @param events 本批动态
  * @param options 当前时间与头像
@@ -116,6 +158,7 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], { now = D
     return `<li class="item" style="--fg:${kind.fg};--bg:${kind.bg}"><span class="avatar">${face(event.author, picture)}<span class="kind">${svg(kind.icon)}</span></span><div class="body">
       <h2 class="title">${escape(cleanText(event.title, 160))}</h2>
       <div class="meta"><span class="badge">${kind.name}</span>${id ? `<span class="id mono">${escape(id)}</span>` : ""}<span class="author">${escape(event.author)}</span><span class="time">${escape(shortDate(event.time, now))}</span></div>
+      ${commitDetails(event)}
     </div></li>`
   }).join("")
   return { name: "git-digest", tailwind: false, html: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escape(row.repo)} · Git 动态</title><style>
@@ -151,6 +194,17 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], { now = D
     .badge{flex:none;padding:0 8px;border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px;line-height:22px;font-weight:600}
     .id{flex:none;font-size:13px;color:#4a5568}.author{min-width:0;overflow:hidden;text-overflow:ellipsis}
     .time{flex:none;margin-left:auto;font-variant-numeric:tabular-nums}
+    .commit-description,.commit-changes{margin-top:14px}
+    .detail-label{margin-bottom:5px;font-size:12px;font-weight:600;color:#647186}
+    .description{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:8;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.65;color:#3d4757}
+    .change-summary{font-size:13px;color:#3d4757;font-variant-numeric:tabular-nums}
+    .files{margin-top:8px;padding:6px 10px;background:#f6f8fa;border:1px solid #edf0f4;border-radius:8px}
+    .file-head,.file-row{display:grid;grid-template-columns:minmax(0,1fr) 62px 62px;gap:8px;align-items:start;padding:5px 0}
+    .file-head{font-size:11px;color:#647186}.file-head span:not(:first-child){text-align:right}
+    .file-row+.file-row{border-top:1px solid #edf0f4}
+    .file-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;font-size:12px;line-height:1.5;color:#3d4757}
+    .file-count{text-align:right;font-size:12px;line-height:1.5;color:#1b2433;font-variant-numeric:tabular-nums}
+    .detail-note{margin-top:6px;font-size:12px;color:#647186}
     .empty{padding:40px 28px;text-align:center;font-size:14px;color:#647186}.empty h2{margin-bottom:4px;font-size:18px;color:#1b2433}
     footer{display:flex;justify-content:space-between;gap:16px;padding:12px 28px;background:#f6f8fa;border-top:1px solid #edf0f4;font-size:12px;color:#647186}
     footer b{font-weight:600;color:#3d4757}

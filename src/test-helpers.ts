@@ -94,7 +94,7 @@ export function harness(input: Record<string, unknown> = {}, persisted = new Map
       accounts: { list: () => [{ record: { id: "bot-account", adapterId: "mock", selfId: "bot" }, status: "online" }] }
     },
     logger: { warn: (value: unknown) => { warnings.push(String(value)) }, info() {} },
-    render: async (): Promise<unknown> => { throw new Error("No renderer") },
+    render: async (_page?: unknown): Promise<unknown> => { throw new Error("No renderer") },
     cache: () => { const map = new Map<string, unknown>(); return { get: (key: string) => map.get(key), set: (key: string, value: unknown) => { map.set(key, value) } } },
     provide(name: string, value: unknown) { services.set(name, value) },
     command() { return { action() {} } },
@@ -126,6 +126,7 @@ export function fakeProvider(initial: Partial<Record<EventType, GitEvent[]>> = {
     lists, calls,
     beginRound() {},
     metadata: async (): Promise<RepoMetadata> => ({ public: true }),
+    commitDetail: async (_row, _token, _config, event) => event,
     async page(_row, token, _config, type, pageNumber, options) {
       calls.push({ type, pageNumber, token, options })
       let list = lists[type]

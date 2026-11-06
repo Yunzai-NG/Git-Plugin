@@ -8,8 +8,8 @@
 import { createHash } from "node:crypto"
 import type { HttpRequestOptions } from "@yunzai-ng/types"
 import { avatarUrl } from "./avatars.js"
-import { PLATFORMS, GitError, cleanText, errorCode, repoKey } from "./model.js"
-import type { EventType, GitEvent, Platform } from "./model.js"
+import { PLATFORMS, GitError, cleanBody, cleanText, errorCode, repoKey } from "./model.js"
+import type { CommitChanges, CommitFile, EventType, GitEvent, Platform } from "./model.js"
 
 const paths: Readonly<Record<EventType, string>> = { commit: "commits", issue: "issues", pr: "pulls", release: "releases" }
 const fingerprint = (value: string) => createHash("sha256").update(value).digest("hex")
@@ -80,12 +80,42 @@ export function normalizeEvent(platform: Platform, repo: string, type: EventType
   } catch { /* 缺少网页链接时使用官方仓库地址构造。 */ }
   // Issue/PR 的作者在 user，Commit/Release 在 author；GitCode 的 Commit 不带头像，卡片显示首字母。
   const person = type === "issue" || type === "pr" ? item.user : item.author
+  const message = type === "commit" ? String(item.commit?.message ?? "").replace(/\r\n?/g, "\n").trim() : ""
+  const newline = message.indexOf("\n")
+  const title = newline < 0 ? message : message.slice(0, newline)
+  const description = newline < 0 ? "" : cleanBody(message.slice(newline + 1))
   return {
     id, type, time, url,
-    title: cleanText(type === "commit" ? item.commit?.message : type === "release" ? item.name || item.tag_name : item.title),
+    ...(type === "commit" ? { description } : {}),
+    title: cleanText(type === "commit" ? title : type === "release" ? item.name || item.tag_name : item.title),
     author: cleanText(item.user?.login || item.author?.login || item.author?.name || item.commit?.author?.name || "未知作者", 60),
     avatar: avatarUrl(platform, person?.avatar_url)
   }
+}
+
+/** 行数必须是非负整数；缺失、负数和格式错误不能当作 0 */
+const lineCount = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+
+/** 从详情提取统计和前 8 个文件，不保存 patch，避免 KV 和图片膨胀 */
+function commitChanges(data: Record<string, unknown>, headers: Record<string, string> = {}): CommitChanges | undefined {
+  const stats = data.stats && typeof data.stats === "object" ? data.stats as Record<string, unknown> : {}
+  const additions = lineCount(stats.additions), deletions = lineCount(stats.deletions)
+  const rawFiles = Array.isArray(data.files) ? data.files : undefined
+  if (!rawFiles && additions === undefined && deletions === undefined) return undefined
+  const partial = data.truncated === true || /rel="?next"?/.test(headers.link ?? "")
+  const files: CommitFile[] = []
+  for (const raw of rawFiles?.slice(0, 8) ?? []) {
+    if (!raw || typeof raw !== "object") continue
+    const file = raw as Record<string, unknown>
+    if (typeof file.filename !== "string" || !file.filename) continue
+    files.push({ filename: cleanText(file.filename, 500),
+      previousFilename: typeof file.previous_filename === "string" ? cleanText(file.previous_filename, 500) : undefined,
+      additions: lineCount(file.additions), deletions: lineCount(file.deletions) })
+  }
+  return { additions, deletions, files,
+    fileCount: rawFiles && !partial ? rawFiles.length : undefined,
+    filesTruncated: partial || (rawFiles?.length ?? 0) > files.length }
 }
 
 /** 平台客户端需要的 HTTP 能力，`ctx.http` 满足它 */
@@ -156,6 +186,8 @@ export interface Provider {
   metadata(row: RepoTarget, token: string, config: ProviderConfig, signal?: AbortSignal): Promise<RepoMetadata>
   /** 读取一页某类动态 */
   page(row: RepoTarget, token: string, config: ProviderConfig, type: EventType, pageNumber: number, options?: PageOptions): Promise<PageResult>
+  /** 为即将投递的 Commit 补充正文、统计与文件明细；不会用于首次基线扫描 */
+  commitDetail(row: RepoTarget, token: string, config: ProviderConfig, event: GitEvent, signal?: AbortSignal): Promise<GitEvent>
 }
 
 /** 退避状态：截止时间与连续失败次数 */
@@ -226,6 +258,22 @@ export function createProvider(http: ProviderHttp, { now = Date.now }: { now?: (
 
   return {
     beginRound() { cache = new Map() },
+
+    async commitDetail(row, token, config, event, signal) {
+      if (event.type !== "commit" || event.commitDetailsLoaded) return event
+      const response = await request(row, token, config, `/commits/${encodeURIComponent(event.id)}`,
+        row.platform === "github" ? { page: 1, per_page: 100 } : {}, signal)
+      if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) {
+        throw new GitError("提交详情响应格式不正确。", "response")
+      }
+      const data = response.data as Record<string, unknown>
+      if (data.sha !== event.id) throw new GitError("提交详情编号不匹配。", "response")
+      // 原事件的身份、时间与作者不变；正文缺失时仍保留列表接口提供的内容。
+      const commit = data.commit as RawItem["commit"]
+      const parsed = typeof commit?.message === "string" ? normalizeEvent(row.platform, row.repo, "commit", data, true) : undefined
+      return { ...event, title: parsed?.title || event.title, description: parsed?.description || event.description,
+        changes: commitChanges(data, response.headers), commitDetailsLoaded: true }
+    },
 
     async metadata(row, token, config, signal) {
       const { data } = await request(row, token, config, "", {}, signal)

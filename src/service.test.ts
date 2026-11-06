@@ -315,3 +315,85 @@ describe("messageContent", () => {
     expect(links).toContain(events[0]!.url)
   })
 })
+
+describe("Commit 详情投递", () => {
+  it("初始化和离线时不查详情；发送失败后已落盘详情跨重启复用", async () => {
+    const h = harness({ chats: chats(row({ events: ["commit"] })) })
+    const provider = fakeProvider({ commit: [event("old")] })
+    let calls = 0
+    provider.commitDetail = async (_row, _token, _config, input) => {
+      calls++
+      return { ...input, description: "详细内容\n- 一项变更", commitDetailsLoaded: true,
+        changes: { additions: 17, deletions: 3, fileCount: 1, filesTruncated: false,
+          files: [{ filename: "src/a.ts", additions: 17, deletions: 3 }] } }
+    }
+    let service = createGitService(h.ctx, { provider })
+    await service.tick()
+    expect(calls).toBe(0)
+    provider.lists.commit.unshift(event("new"))
+    h.bot.online = false
+    await service.tick()
+    expect(calls).toBe(0)
+    h.bot.online = true
+    const send = h.bot.sendMessage
+    h.bot.sendMessage = async () => ({ ok: false })
+    await service.tick()
+    expect(calls).toBe(1)
+    const saved = h.persisted.get(`subscription:${subscriptionId(row())}`) as SubState
+    expect(saved.pending[0]?.commitDetailsLoaded).toBe(true)
+    expect(saved.pending[0]?.changes?.additions).toBe(17)
+    h.bot.sendMessage = send
+    service = createGitService(h.ctx, { provider })
+    await service.tick()
+    expect(calls).toBe(1)
+    expect(h.sent[0]?.content).toContain("详细内容\n- 一项变更")
+    expect(h.sent[0]?.content).toContain("新增 +17 行 · 删除 −3 行")
+    expect((await service.status())[0]?.pending).toBe(0)
+  })
+
+  it("详情失败不阻断基础推送；详情落盘失败则不能继续发送", async () => {
+    const h = harness({ chats: chats(row({ events: ["commit"] })) })
+    const provider = fakeProvider({ commit: [event("old")] })
+    const service = createGitService(h.ctx, { provider })
+    await service.tick()
+    provider.lists.commit.unshift(event("new"))
+    provider.commitDetail = async () => { throw new Error("detail unavailable") }
+    await service.tick()
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]?.content).toContain("增删详情暂不可用")
+    expect((await service.status())[0]?.pending).toBe(0)
+
+    provider.lists.commit.unshift(event("next"))
+    provider.commitDetail = async (_row, _token, _config, input) => ({ ...input, commitDetailsLoaded: true })
+    const set = h.fake.kv.set
+    h.fake.kv.set = async (key, value) => {
+      if ((value as SubState).pending.some(item => item.commitDetailsLoaded)) throw new Error("write failure")
+      await set(key, value)
+    }
+    await service.tick()
+    expect(h.sent).toHaveLength(1)
+    expect((await service.status())[0]?.pending).toBe(1)
+    h.fake.kv.set = set
+    await service.tick()
+    expect(h.sent).toHaveLength(2)
+  })
+})
+
+it("含 Commit 的图片每批最多三条，未投递的记录保留到下一轮", async () => {
+  const h = harness({ chats: chats(row({ events: ["commit"], format: "image" })) })
+  const provider = fakeProvider({ commit: [event("old")] })
+  const pages: string[] = []
+  h.fake.render = async page => {
+    pages.push((page as { html: string }).html)
+    return { type: "image", file: { kind: "buffer", data: Buffer.from("png") } }
+  }
+  const service = createGitService(h.ctx, { provider })
+  await service.tick()
+  provider.lists.commit = [...Array.from({ length: 10 }, (_, i) => event(`new-${i}`)), event("old")]
+  await service.tick()
+  expect(pages.map(html => html.match(/class="title"/g)?.length)).toEqual([3, 3, 3])
+  expect((await service.status())[0]?.pending).toBe(1)
+  await service.tick()
+  expect(pages[3]?.match(/class="title"/g)).toHaveLength(1)
+  expect((await service.status())[0]?.pending).toBe(0)
+})

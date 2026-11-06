@@ -49,6 +49,11 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
   const requests: string[] = []
   const fakeHttp = { async request(url: string, _options?: HttpRequestOptions) {
     requests.push(url)
+    if (url.includes("/commits/")) {
+      const commit = commits.find(item => item.sha === decodeURIComponent(url.split("/").at(-1) ?? ""))
+      return { ok: true, status: 200, headers: {}, data: { ...structuredClone(commit),
+        stats: { additions: 17, deletions: 3 }, files: [{ filename: "src/config.ts", additions: 17, deletions: 3 }] } }
+    }
     return { ok: true, status: 200, headers: {}, data: url.endsWith("/commits") ? structuredClone(commits) :
       /\/(issues|pulls|releases)$/.test(url) ? [] : { private: false, default_branch: "main" } }
   } }
@@ -103,10 +108,15 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     await service.idle()
     expect((await service.status())[0]?.initialized).toBe(true)
     expect(mock.sent).toHaveLength(0)
-    commits.unshift(apiCommit("new-commit", "2000-01-01T00:00:00Z"))
+    const newCommit = apiCommit("new-commit", "2000-01-01T00:00:00Z")
+    newCommit.commit.message = "feat: new-commit\n\n详细内容\n- 按会话配置推送"
+    commits.unshift(newCommit)
     await service.tick()
     await mock.waitForSend(1)
     expect(mock.last()?.text).toMatch(/new-commit/)
+    expect(mock.last()?.text).toContain("详细内容\n- 按会话配置推送")
+    expect(mock.last()?.text).toContain("新增 +17 行 · 删除 −3 行")
+    expect(mock.last()?.text).toContain("src/config.ts  +17 / −3")
     expect(mock.last()?.target).toMatchObject({ gid: "123" })
     expect(requests.every(url => /^https:\/\/(api\.github\.com|gitee\.com|api\.gitcode\.com)\//.test(url))).toBe(true)
 
