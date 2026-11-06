@@ -171,6 +171,52 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     await service.idle()
     expect(await service.status()).toEqual([])
     expect((await api("GET", "config/git-plugin")).data.value.tokens.github).toBe("")
+
+    // 列表没有渲染器时仍可查看，包括空列表；不会影响推送配置或发起 Git 请求。
+    let sends = mock.sent.length
+    mock.driver.receiveGroup("#git列表", { gid: "123", uid: "list-empty", role: "admin" })
+    await mock.waitForSend(++sends)
+    expect(mock.last()?.text).toContain("尚无订阅")
+    const localRows = Array.from({ length: 6 }, (_, i) => row({ accountId: account.id, repo: `owner/list-${i}` }))
+    const otherRow = row({ accountId: account.id, repo: "owner/other-group", targetId: "456" })
+    await api("PATCH", "config/git-plugin", { enabled: false, defaultFormat: "text", tokens: { github: "list-secret-token" }, chats: chats(...localRows, otherRow) })
+    await service.idle()
+    const beforeRequests = requests.length
+    const pages: string[] = []
+    app.runtime.renderers.register({ id: "list-fixture", available: async () => true, async render(request) {
+      pages.push(request.html ?? "")
+      return { images: [Buffer.from("png")], cost: 0, renderer: "list-fixture" }
+    } }, "test-only")
+
+    // 普通成员不回复；群管不能看全部，更不能把其他群的仓库送进渲染器。
+    mock.driver.receiveGroup("#git列表", { gid: "123", uid: "list-member", role: "member" })
+    await expect(mock.waitForSend(sends + 1, 100)).rejects.toThrow()
+    mock.driver.receiveGroup("#git列表 全部", { gid: "123", uid: "list-admin-all", role: "admin" })
+    await mock.waitForSend(++sends)
+    expect(mock.last()?.text).toMatch(/只有主人/)
+    expect(pages).toHaveLength(0)
+    mock.driver.receiveGroup("#git列表", { gid: "123", uid: "list-admin", role: "admin" })
+    await mock.waitForSend(sends += 2)
+    expect(pages).toHaveLength(2)
+    expect(pages.every(html => !html.includes("owner/other-group"))).toBe(true)
+    expect(pages.map(html => html.match(/class="list-index mono"/g)?.length)).toEqual([5, 1])
+    const localMessages = mock.sent.slice(-2)
+    expect(localMessages.every(item => item.message.some(part => part.type === "image"))).toBe(true)
+    for (const sub of localRows) expect(localMessages.filter(item => item.text.includes(subscriptionId(sub)))).toHaveLength(1)
+
+    // 主人可查看全部，仍分页；#git状态 保持文字，不顺带暴露 Token。
+    mock.driver.receiveGroup("#git列表 全部", { gid: "123", uid: "owner", role: "owner" })
+    await mock.waitForSend(sends += 2)
+    expect(pages).toHaveLength(4)
+    expect(pages.slice(2).join("\n")).toContain("owner/other-group")
+    expect(pages.every(html => html.includes(`Yunzai NG v${app!.version}`))).toBe(true)
+    expect(pages.join("\n")).not.toContain("list-secret-token")
+    mock.driver.receiveGroup("#git状态", { gid: "123", uid: "owner", role: "owner" })
+    await mock.waitForSend(sends += 2)
+    expect(mock.sent.slice(-2).every(item => !item.message.some(part => part.type === "image"))).toBe(true)
+    expect(mock.last()?.text).toContain(account.id)
+    expect(requests).toHaveLength(beforeRequests)
+    expect(mock.texts.join("\n")).not.toContain("list-secret-token")
   } finally {
     await app?.stop()
     // 只删系统临时目录里的这一份，路径异常时宁可留下垃圾

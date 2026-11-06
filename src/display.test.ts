@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { cardPage, messageContent, textDigest } from "./display.js"
+import { cardPage, messageContent, subscriptionListMessages, subscriptionListPage, textDigest } from "./display.js"
 import type { GitEvent } from "./model.js"
+import type { StatusEntry } from "./service.js"
 import { event, harness, row } from "./test-helpers.js"
 
 const commit = (): GitEvent => ({ ...event("abcdef0123456789"), title: "feat!: 标题不混进正文",
@@ -93,5 +94,93 @@ describe("Commit 推送卡片", () => {
     expect(text).toContain(input.url)
     const h = harness()
     expect(await messageContent(h.ctx, row({ format: "image" }), h.ctx.config.get(), [input])).toBe(text)
+  })
+})
+
+const listEntry = (index: number, patch: Partial<StatusEntry> = {}): StatusEntry => ({
+  id: index.toString(16).padStart(16, "0"), row: row({ repo: `owner/repo-${index}` }),
+  initialized: true, scanning: false, pending: 0, lastCheck: 2000, lastSent: undefined, error: "", retryAt: undefined, ...patch
+})
+
+describe("订阅列表图片", () => {
+  it("与动态卡片共用完整样式和底栏，展示实际事件、样式、状态及目标", () => {
+    const h = harness({ defaultFormat: "image", defaultEvents: ["commit", "release"] })
+    const entries = [listEntry(1), listEntry(2, { initialized: false, row: row({ platform: "gitee", branch: "dev", events: ["issue"], format: "text" }) }),
+      listEntry(3, { pending: 7, scanning: true, row: row({ platform: "gitcode", enabled: false, scene: "private", targetId: "789" }) })]
+    const options = { pluginVersion: "1.2.3", frameworkVersion: "9.8.7", now: 2000 }
+    const html = subscriptionListPage(entries, h.ctx.config.get(), options).html
+    const dynamic = cardPage(row(), [commit()], options).html
+    expect(html.match(/<style>([\s\S]*?)<\/style>/)?.[1]).toBe(dynamic.match(/<style>([\s\S]*?)<\/style>/)?.[1])
+    expect(html).toContain('<footer><b>Git-Plugin v1.2.3</b><span>Yunzai NG v9.8.7</span></footer>')
+    for (const text of ["GitHub", "Gitee", "GitCode", "已初始化", "待初始化", "已停用 / 续查中", "图片推送", "文字推送", "分支 · dev", "待发 7", "私聊 789", "账号 bot-account", "Release", "Issue"]) expect(html).toContain(text)
+    expect(html).toContain(entries[0]!.id)
+    expect(html).not.toContain("链接见图片下方文字")
+  })
+
+  it("每页最多 5 项，完整编号不截断，多页无丢失；空列表仍有卡片", () => {
+    const h = harness()
+    const entries = Array.from({ length: 11 }, (_, i) => listEntry(i + 1))
+    const pages = [1, 2, 3].map(page => subscriptionListPage(entries, h.ctx.config.get(), { page }).html)
+    expect(pages.map(html => html.match(/class="list-index mono"/g)?.length)).toEqual([5, 5, 1])
+    for (const entry of entries) expect(pages.filter(html => html.includes(entry.id))).toHaveLength(1)
+    expect(pages[2]).toContain("第 3 / 3 页")
+    const empty = subscriptionListPage([], h.ctx.config.get()).html
+    expect(empty).toContain("尚无订阅")
+    expect(empty).toContain("<b>0</b>个订阅")
+  })
+
+  it("仓库、分支、目标、错误和范围全部转义，不输出凭据；长错误限长", () => {
+    const h = harness({ tokens: { github: "never-show-this-token" } })
+    const entry = listEntry(1, { row: { ...row(), repo: "owner/<img src=x>", branch: '<script>"', targetId: "<target>", accountId: "<account>" },
+      error: "<script>alert(1)</script>" + "x".repeat(1000) })
+    const html = subscriptionListPage([entry], h.ctx.config.get(), { scope: "<scope>" }).html
+    for (const text of ["&lt;img src=x&gt;", "&lt;script&gt;", "&lt;target&gt;", "&lt;account&gt;", "&lt;scope&gt;"]) expect(html).toContain(text)
+    expect(html).not.toContain("<script>")
+    expect(html).not.toContain("<img src=x>")
+    expect(html).not.toContain("never-show-this-token")
+    expect(html).not.toContain("x".repeat(250))
+  })
+
+  it("默认文字推送也生成列表图片，附可复制编号并传入运行版本", async () => {
+    const h = harness({ defaultFormat: "text" })
+    const entries = [listEntry(1)]
+    let html = ""
+    h.fake.render = async page => {
+      html = (page as { html: string }).html
+      return { type: "image", file: { kind: "buffer", data: Buffer.from("png") } }
+    }
+    const messages = []
+    for await (const content of subscriptionListMessages(h.ctx, entries, h.ctx.config.get(), "全部会话")) messages.push(content)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject([{ type: "image" }, expect.stringContaining(entries[0]!.id)])
+    expect(html).toContain(`Git-Plugin v${h.ctx.version}`)
+    expect(html).toContain(`Yunzai NG v${h.ctx.app.version}`)
+    expect(html).toContain("全部会话")
+  })
+
+  it("渲染失败后剩余页只发文字；已成功的图片不重复，编号、状态和错误仍完整", async () => {
+    const h = harness({ tokens: { github: "never-show-this-token" } })
+    const entries = Array.from({ length: 11 }, (_, i) => listEntry(i + 1, { error: "请求正在退避", pending: i }))
+    let renders = 0
+    h.fake.render = async () => {
+      if (++renders === 2) throw new Error("never-show-this-token")
+      return { type: "image", file: { kind: "buffer", data: Buffer.from("png") } }
+    }
+    const messages = []
+    for await (const content of subscriptionListMessages(h.ctx, entries, h.ctx.config.get())) messages.push(content)
+    expect(renders).toBe(2)
+    expect(messages).toHaveLength(3)
+    expect(Array.isArray(messages[0])).toBe(true)
+    expect(typeof messages[1]).toBe("string")
+    expect(typeof messages[2]).toBe("string")
+    expect(messages[1]).toContain("请求正在退避")
+    for (const entry of entries.slice(5)) expect(messages.slice(1).filter(text => String(text).includes(entry.id))).toHaveLength(1)
+    expect(JSON.stringify(messages)).not.toContain("never-show-this-token")
+    expect(h.warnings).toHaveLength(1)
+    const failed = harness()
+    let attempts = 0
+    failed.fake.render = async () => { attempts++; throw new Error("No renderer") }
+    for await (const content of subscriptionListMessages(failed.ctx, entries, failed.ctx.config.get())) expect(typeof content).toBe("string")
+    expect(attempts).toBe(1)
   })
 })

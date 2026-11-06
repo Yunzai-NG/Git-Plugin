@@ -73,7 +73,7 @@ export function harness(input: Record<string, unknown> = {}, persisted = new Map
   const controller = new AbortController()
   const bot: FakeBot = { online: true, async sendMessage(target, content) { sent.push({ target, content }); return { ok: true } } }
   const fake = {
-    version: "0.3.1",
+    version: "0.3.2",
     signal: controller.signal,
     kv: {
       async get(key: string) { return structuredClone(persisted.get(key)) },

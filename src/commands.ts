@@ -1,12 +1,13 @@
 /**
  * 模块职责：聊天命令 —— #git帮助 / 订阅 / 列表 / 取消 / 检查 / 样式 / 状态
- * 依赖方向：model.ts 与 service.ts 的公开接口
+ * 依赖方向：model.ts、display.ts 与 service.ts 的公开接口
  * 生命周期：setup 时注册一次，随插件卸载由内核回收
  * 注意事项：主人管理全部；群主和群管理员仅管理本群；私聊管理仅主人可用。
  *          群管理员不能在聊天中指定 Token 或命名凭据，只能用主人已授予本会话的凭据。
  */
 import type { MessageEvent, PluginContext } from "@yunzai-ng/types"
 import type { GitConfigInput, Subscription, SubscriptionInput } from "./config.js"
+import { subscriptionListMessages } from "./display.js"
 import { EVENTS, PLATFORMS, GitError, eventTypes, parseRepo, safeError, targetKey } from "./model.js"
 import type { EventType } from "./model.js"
 import type { GitService } from "./service.js"
@@ -15,6 +16,7 @@ const HELP = `Git-Plugin · GitHub / Gitee / GitCode
 #git订阅 github:owner/repo 分支=main 事件=commit,issue,pr,release 样式=文字
 也可使用完整 HTTPS 仓库首页地址；可选参数均可省略。
 #git列表 / #git取消 <编号> / #git检查 [编号]
+列表默认生成图片，每页最多 5 项，编号附在图片下方；渲染失败回退文字。
 #git样式 <编号> <文字或图片>
 主人：#git状态 / #git列表 全部 / #git检查 全部
 群主、群管仅管理本群，私聊仅主人可管理。
@@ -24,7 +26,7 @@ const PATTERN = /^#git(订阅|列表|取消|检查|样式|状态)(?:\s+(.*))?$/i
 const isEventType = (value: string): value is EventType => (EVENTS as readonly string[]).includes(value)
 
 /** 命令需要的插件能力，`PluginContext` 满足它 */
-export type CommandContext = Pick<PluginContext<GitConfigInput>, "command" | "config" | "app">
+export type CommandContext = Pick<PluginContext<GitConfigInput>, "command" | "config" | "app" | "version" | "logger" | "render">
 
 /**
  * 注册具有固定前缀的命令，避免与普通消息匹配
@@ -111,6 +113,10 @@ async function handle(ctx: CommandContext, service: GitService, event: MessageEv
 
   if (raw && !all) throw new GitError("列表参数只支持“全部”。", "input")
   const config = ctx.config.get()
+  if (action === "列表") {
+    for await (const content of subscriptionListMessages(ctx, entries, config, all ? "全部会话" : "当前会话")) await event.reply(content)
+    return
+  }
   const lines = entries.map(item => `${item.id} | ${item.row.enabled ? item.initialized ? "已初始化" : "待初始化" : "已停用"}${item.scanning ? " / 续查中" : ""}\n` +
     `${PLATFORMS[item.row.platform].name} ${item.row.repo}${item.row.branch ? ` [${item.row.branch}]` : ""}\n` +
     `${eventTypes(item.row, config).join(",")} · 待发 ${item.pending} · ${item.row.scene}:${item.row.targetId}\n` +

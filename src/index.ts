@@ -12,7 +12,7 @@ import { createGitService } from "./service.js"
 
 export default definePlugin({
   name: "git-plugin",
-  version: "0.3.1",
+  version: "0.3.2",
   description: "GitHub、Gitee、GitCode 仓库新动态订阅与推送",
   configSchema,
   setup(ctx) {

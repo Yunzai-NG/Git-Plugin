@@ -1,15 +1,17 @@
 /**
- * 模块职责：推送内容 —— 纯文字摘要与图片卡片（自包含 HTML，经 ctx.render 截图）
- * 依赖方向：model.ts；头像由 avatars.ts 的加载器提供
- * 生命周期：纯函数；`messageContent` 每批调用一次
+ * 模块职责：动态推送与订阅列表 —— 纯文字摘要和共用样式的图片卡片（自包含 HTML，经 ctx.render 截图）
+ * 依赖方向：model.ts；config/service 仅引用类型，头像由 avatars.ts 的加载器提供
+ * 生命周期：页面生成是纯函数；动态按批调用，订阅列表按页顺序渲染
  * 注意事项：卡片宽 600 CSS px、以 2 倍出图，手机全屏看也清楚；渲染失败才退回文字，
  *          发送失败交给可靠队列重试。卡片里的远端文本一律转义；头像以 data URI 传入，
  *          页面不访问网络。卡片设计记录见 DESIGN.md。
  */
 import type { Logger, MessageContent, RenderOptions, RenderablePage, RenderedImage } from "@yunzai-ng/types"
 import type { AvatarLoader } from "./avatars.js"
-import { PLATFORMS, cleanBody, cleanText } from "./model.js"
+import type { GitConfig } from "./config.js"
+import { PLATFORMS, cleanBody, cleanText, eventTypes } from "./model.js"
 import type { CommitFile, EventType, GitEvent, Platform } from "./model.js"
+import type { StatusEntry } from "./service.js"
 
 const labels: Readonly<Record<EventType, string>> = { commit: "新 Commit", issue: "新 Issue", pr: "新 PR", release: "新 Release" }
 const date = (time: number) => time ? new Date(time).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "时间未提供"
@@ -75,6 +77,8 @@ export function textDigest(row: DisplayRow, events: readonly GitEvent[]): string
 /** 卡片宽度（CSS 像素）与出图倍率：600 × 2 = 1200px 宽 */
 const CARD_WIDTH = 600
 const CARD_SCALE = 2
+const CARD_RENDER_OPTIONS: RenderOptions = { type: "png", viewport: { width: CARD_WIDTH, scale: CARD_SCALE }, timeout: 15_000 }
+const LIST_PAGE_SIZE = 5
 
 /** 事件类型的短名、浅底配色、深色页头上的圆点色与 24×24 线框图标 */
 interface Kind {
@@ -170,7 +174,18 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], {
       ${commitDetails(event)}
     </div></li>`
   }).join("")
-  return { name: "git-digest", tailwind: false, html: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escape(row.repo)} · Git 动态</title><style>
+  return cardShell("git-digest", `${row.repo} · Git 动态`, `
+      <div class="tags"><span class="tag platform">${escape(PLATFORMS[row.platform].name)}</span>${row.branch ? `<span class="tag mono">${svg(branchIcon)}<span>${escape(row.branch)}</span></span>` : ""}</div>
+      <div class="headline"><div class="repo">${rest.length ? `<p class="owner">${escape(owner)} /</p>` : ""}<h1>${escape(rest.join("/") || owner)}</h1></div><div class="total"><b>${events.length}</b>条新动态</div></div>
+      ${stats}`, events.length ? `<ol>${items}</ol>` : '<section class="empty"><h2>暂无新增动态</h2><p>本次没有可展示的仓库更新。</p></section>',
+    { pluginVersion, frameworkVersion })
+}
+
+/** 动态和订阅列表共用页面外壳、样式及版本底栏，避免两套设计逐渐漂移 */
+function cardShell(name: string, title: string, header: string, content: string, {
+  pluginVersion = "未知", frameworkVersion = "未知"
+}: CardOptions): RenderablePage {
+  return { name, tailwind: false, html: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escape(title)}</title><style>
     *{box-sizing:border-box}
     body{margin:0;background:#fff;color:#1b2433;font-family:"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Noto Sans SC",sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
     h1,h2,p,ol{margin:0;padding:0}ol{list-style:none}
@@ -218,12 +233,18 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], {
     .empty{padding:40px 28px;text-align:center;font-size:14px;color:#647186}.empty h2{margin-bottom:4px;font-size:18px;color:#1b2433}
     footer{display:flex;justify-content:space-between;gap:16px;padding:12px 28px;background:#f6f8fa;border-top:1px solid #edf0f4;font-size:12px;color:#647186}
     footer b{font-weight:600;color:#3d4757}
-    </style></head><body><main id="container"><header>
-      <div class="tags"><span class="tag platform">${escape(PLATFORMS[row.platform].name)}</span>${row.branch ? `<span class="tag mono">${svg(branchIcon)}<span>${escape(row.branch)}</span></span>` : ""}</div>
-      <div class="headline"><div class="repo">${rest.length ? `<p class="owner">${escape(owner)} /</p>` : ""}<h1>${escape(rest.join("/") || owner)}</h1></div><div class="total"><b>${events.length}</b>条新动态</div></div>
-      ${stats}
-    </header>
-    ${events.length ? `<ol>${items}</ol>` : "<section class=\"empty\"><h2>暂无新增动态</h2><p>本次没有可展示的仓库更新。</p></section>"}
+    .list-index{flex:none;display:grid;place-items:center;width:40px;height:40px;margin-top:16px;border-radius:10px;background:#e8f0fd;color:#1f5fc9;font-size:16px;font-weight:600}
+    .list-heading{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:12px;color:#647186}
+    .list-platform{font-weight:600;color:#3d4757}.list-state{margin-left:auto;padding:1px 7px;border:1px solid #edf0f4;border-radius:6px}
+    .list-branch,.list-id{margin-top:5px;font-size:13px;color:#4a5568;overflow-wrap:anywhere}
+    .list-branch{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+    .list-events{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:8px}.list-format{font-size:12px;color:#647186}
+    .list-info{margin-top:10px;padding:9px 11px;background:#f6f8fa;border:1px solid #edf0f4;border-radius:8px;font-size:12px;color:#647186;overflow-wrap:anywhere}
+    .list-target{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin-bottom:4px}
+    .list-check{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;font-variant-numeric:tabular-nums}
+    .list-error{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin-top:7px;color:#3d4757}
+    </style></head><body><main id="container"><header>${header}</header>
+    ${content}
     <footer><b>Git-Plugin v${escape(pluginVersion)}</b><span>Yunzai NG v${escape(frameworkVersion)}</span></footer>
     </main></body></html>` }
 }
@@ -238,6 +259,93 @@ export interface DisplayContext {
   readonly logger: Pick<Logger, "warn">
   /** 渲染页面为图片段 */
   render(page: RenderablePage, opts?: RenderOptions): Promise<RenderedImage>
+}
+
+/** 订阅列表卡片选项；分页由完整的权限过滤结果计算 */
+export interface ListCardOptions extends CardOptions {
+  /** 展示范围，例如当前会话或全部会话 */
+  scope?: string
+  /** 页码，从 1 开始，每页最多 5 个订阅 */
+  page?: number
+}
+
+/** 一条订阅的状态文字，图片和文字回退使用同一语义 */
+const subscriptionState = (item: StatusEntry) =>
+  `${item.row.enabled ? item.initialized ? "已初始化" : "待初始化" : "已停用"}${item.scanning ? " / 续查中" : ""}`
+
+/** 一条订阅的文字明细，只选择展示字段，不输出凭据或原始配置 */
+function subscriptionText(item: StatusEntry, config: GitConfig): string {
+  return `${item.id} | ${subscriptionState(item)}\n` +
+    `${PLATFORMS[item.row.platform].name} ${cleanText(item.row.repo)}${item.row.branch ? ` [${cleanText(item.row.branch)}]` : ""}\n` +
+    `${eventTypes(item.row, config).join(",")} · 待发 ${item.pending} · ${item.row.scene}:${cleanText(item.row.targetId)}\n` +
+    `账号：${cleanText(item.row.accountId)}\n` +
+    `最近检查：${item.lastCheck ? date(item.lastCheck) : "尚未检查"}${item.error ? `\n${cleanText(item.error)}` : ""}`
+}
+
+/**
+ * 生成订阅列表的一页，共用动态卡片的页面外壳、配色、字体和版本底栏
+ * @param entries 已按命令权限过滤的完整订阅列表
+ * @param config 当前配置，仅选择展示字段
+ * @param options 范围、页码、时间和运行版本
+ * @returns 自包含页面，不访问网络
+ */
+export function subscriptionListPage(entries: readonly StatusEntry[], config: GitConfig, options: ListCardOptions = {}): RenderablePage {
+  const { now = Date.now(), scope = "当前会话" } = options
+  const pages = Math.max(1, Math.ceil(entries.length / LIST_PAGE_SIZE))
+  const page = Math.min(pages, Math.max(1, Math.trunc(options.page ?? 1)))
+  const offset = (page - 1) * LIST_PAGE_SIZE
+  const items = entries.slice(offset, offset + LIST_PAGE_SIZE).map((item, index) => {
+    const { row } = item
+    const format = (row.format === "default" ? config.defaultFormat : row.format) === "image" ? "图片推送" : "文字推送"
+    return `<li class="item"><span class="list-index mono">${offset + index + 1}</span><div class="body">
+      <div class="list-heading"><span class="list-platform">${escape(PLATFORMS[row.platform].name)}</span><span class="list-state">${escape(subscriptionState(item))}</span></div>
+      <h2 class="title">${escape(cleanText(row.repo))}</h2>
+      <p class="list-branch">分支 · ${escape(cleanText(row.branch) || "默认分支")}</p>
+      <div class="list-events">${eventTypes(row, config).map(type => `<span class="badge" style="--fg:${kinds[type].fg};--bg:${kinds[type].bg}">${kinds[type].name}</span>`).join("")}<span class="list-format">${format}</span></div>
+      <p class="list-id">编号 <span class="mono">${escape(item.id)}</span></p>
+      <div class="list-info"><p class="list-target">${row.scene === "group" ? "群聊" : "私聊"} ${escape(cleanText(row.targetId))} · 账号 ${escape(cleanText(row.accountId))}</p>
+        <div class="list-check"><span>最近检查 · ${item.lastCheck ? escape(shortDate(item.lastCheck, now)) : "尚未检查"}</span><span>待发 ${item.pending}</span></div>
+        ${item.error ? `<p class="list-error">最近错误 · ${escape(cleanText(item.error))}</p>` : ""}
+      </div>
+    </div></li>`
+  }).join("")
+  return cardShell("git-subscriptions", "Git 推送订阅", `
+    <div class="tags"><span class="tag platform">Git-Plugin</span><span class="tag"><span>${escape(cleanText(scope))}</span></span>${pages > 1 ? `<span class="tag">第 ${page} / ${pages} 页</span>` : ""}</div>
+    <div class="headline"><div class="repo"><p class="owner">仓库动态订阅</p><h1>推送订阅</h1></div><div class="total"><b>${entries.length}</b>个订阅</div></div>
+    <div class="stats"><span>推送${config.enabled ? "开启" : "已暂停"}</span><span>每 ${config.intervalSeconds} 秒检查</span></div>`,
+    entries.length ? `<ol>${items}</ol>` : '<section class="empty"><h2>尚无订阅</h2><p>使用 #git订阅 或在面板配置推送。</p></section>', options)
+}
+
+/**
+ * 顺序生成订阅列表图片及可复制编号，每页最多 5 项；渲染失败后剩余页直接回退文字
+ * @param ctx 插件渲染能力和运行版本
+ * @param entries 已按权限过滤的订阅，不能传入未过滤的全局列表
+ * @param config 当前配置
+ * @param scope 展示范围
+ * @returns 逐页回复内容，发送失败由命令层处理，不触发渲染回退
+ */
+export async function* subscriptionListMessages(ctx: DisplayContext, entries: readonly StatusEntry[], config: GitConfig,
+  scope = "当前会话"): AsyncGenerator<MessageContent> {
+  const pages = Math.max(1, Math.ceil(entries.length / LIST_PAGE_SIZE))
+  const now = Date.now()
+  let renderFailed = false
+  for (let page = 1; page <= pages; page++) {
+    const rows = entries.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE)
+    let image: RenderedImage | undefined
+    if (!renderFailed) {
+      try {
+        image = await ctx.render(subscriptionListPage(entries, config, {
+          scope, page, now, pluginVersion: ctx.version, frameworkVersion: ctx.app.version
+        }), CARD_RENDER_OPTIONS)
+      } catch {
+        renderFailed = true
+        ctx.logger.warn("Git 订阅列表渲染失败，剩余页面使用文字列表。")
+      }
+    }
+    yield image ? [image, rows.length ? `可复制订阅编号：\n${rows.map(item => `${cleanText(item.row.repo)}：${item.id}`).join("\n")}` : "尚无订阅，使用 #git订阅 或在面板配置推送。"] :
+      [`Git 订阅列表 | ${cleanText(scope)} · 第 ${page} / ${pages} 页`, `推送${config.enabled ? "开启" : "已暂停"} · 间隔 ${config.intervalSeconds} 秒`,
+        ...(rows.length ? rows.map(item => subscriptionText(item, config)) : ["尚无订阅，使用 #git订阅 或在面板配置推送。"])].join("\n\n")
+  }
 }
 
 /** 推送样式的取值：订阅自己的样式或基础设置里的默认样式 */
@@ -264,7 +372,7 @@ export async function messageContent(ctx: DisplayContext, row: DisplayRow, confi
       const image = await ctx.render(cardPage(row, events, {
         avatars: pictures, pluginVersion: ctx.version, frameworkVersion: ctx.app.version
       }),
-        { type: "png", viewport: { width: CARD_WIDTH, scale: CARD_SCALE }, timeout: 15_000 })
+        CARD_RENDER_OPTIONS)
       return [image, events.map(event => `${labels[event.type]} ${code(event)} ${event.url}`).join("\n")]
     } catch {
       ctx.logger.warn("Git 卡片渲染失败，本批次使用文字摘要。")
