@@ -65,7 +65,7 @@ async function handle(ctx: CommandContext, service: GitService, event: MessageEv
     } catch (error) {
       throw new GitError(error instanceof Error ? error.message : String(error), "input")
     }
-    const row: SubscriptionInput = { ...parsed, ...current, enabled: true, remark: "", branch: "", events: [], format: "default", credential: "" }
+    const row: SubscriptionInput = { ...parsed, ...current, enabled: true, branch: "", events: [], format: "default", credential: "" }
     const supplied = new Set<string>()
     for (const option of options) {
       const separator = option.indexOf("=")

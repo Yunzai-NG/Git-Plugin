@@ -8,25 +8,29 @@ import { createProvider } from "./providers.js"
 import type { RepoMetadata } from "./providers.js"
 import { createGitService } from "./service.js"
 import type { GitService, SubState } from "./service.js"
-import { apiCommit, event, fakeProvider, harness, row } from "./test-helpers.js"
+import { apiCommit, chats, event, fakeProvider, harness, row } from "./test-helpers.js"
 
 describe("配置 schema", () => {
   it("面板可见 Token、订阅、目标、样式与授权，并给出有用的校验", () => {
     const schema = configSchema.describe()
     expect(schema.properties?.tokens?.properties?.github?.widget).toBe("password")
     expect(schema.properties?.tokens?.properties?.gitcode?.secret).toBe(true)
-    expect(schema.properties?.subscriptions?.items?.properties?.events?.widget).toBe("multiselect")
-    expect(schema.properties?.subscriptions?.items?.properties?.scene?.enum).toHaveLength(2)
+    const chat = schema.properties?.chats?.items
+    expect(chat?.properties?.scene?.enum).toHaveLength(2)
+    expect(chat?.properties?.repos?.items?.properties?.events?.widget).toBe("multiselect")
     expect(() => configSchema.parse({ intervalSeconds: 59 })).toThrow()
-    expect(() => configSchema.parse({ subscriptions: [row(), row()] })).toThrow(/不能重复/)
-    expect(() => configSchema.parse({ subscriptions: [row({ credential: "missing" })] })).toThrow(/不存在的凭据/)
+    expect(() => configSchema.parse({ chats: chats(row(), row()) })).toThrow(/不能重复/)
+    expect(() => configSchema.parse({ chats: [...chats(row()), ...chats(row({ repo: "owner/other" }))] })).toThrow(/只能出现一次/)
+    expect(() => configSchema.parse({ chats: chats(row({ credential: "missing" })) })).toThrow(/不存在的凭据/)
+    const many = Array.from({ length: 201 }, (_, index) => row({ repo: `owner/repo-${index}` }))
+    expect(() => configSchema.parse({ chats: chats(...many) })).toThrow(/不能超过 200/)
   })
 })
 
 describe("createGitService", () => {
   it("队列跨失败与重启保留；各接收方互不影响，已确认的不重发", async () => {
     const a = row({ events: ["commit"] }), b = row({ targetId: "456", events: ["commit"] })
-    const h = harness({ subscriptions: [a, b] })
+    const h = harness({ chats: chats(a, b) })
     const provider = fakeProvider({ commit: [event("old")] })
     let service = createGitService(h.ctx, { provider, now: () => 1000 })
     await service.tick()
@@ -49,7 +53,7 @@ describe("createGitService", () => {
 
   it("离线、暂停、删除与身份变化遵循面板配置；改样式与 Token 保留基线", async () => {
     const sub = row({ events: ["commit"] })
-    const h = harness({ subscriptions: [sub], tokens: { github: "one" } })
+    const h = harness({ chats: chats(sub), tokens: { github: "one" } })
     const provider = fakeProvider({ commit: [event("old")] })
     const service = createGitService(h.ctx, { provider })
     await service.tick()
@@ -57,20 +61,20 @@ describe("createGitService", () => {
     provider.lists.commit.unshift(event("new"))
     await service.tick()
     expect((await service.status())[0]?.pending).toBe(1)
-    await h.ctx.config.patch({ subscriptions: [{ ...sub, enabled: false }] })
+    await h.ctx.config.patch({ chats: chats({ ...sub, enabled: false }) })
     h.bot.online = true
     await service.tick()
     expect(h.sent).toHaveLength(0)
-    await h.ctx.config.patch({ subscriptions: [{ ...sub, format: "image", remark: "new remark" }], tokens: { github: "two" } })
+    await h.ctx.config.patch({ chats: [{ ...chats({ ...sub, format: "image" })[0]!, remark: "new remark" }], tokens: { github: "two" } })
     await service.tick()
     expect(h.sent).toHaveLength(1)
     expect(h.warnings.some(line => /渲染失败/.test(line))).toBe(true)
     expect((await service.status())[0]?.initialized).toBe(true)
-    await h.ctx.config.patch({ subscriptions: [{ ...sub, branch: "other" }] })
+    await h.ctx.config.patch({ chats: chats({ ...sub, branch: "other" }) })
     await service.tick()
     expect(h.persisted.has(`subscription:${subscriptionId(sub)}`)).toBe(false)
     expect(h.sent).toHaveLength(1)
-    await h.ctx.config.patch({ subscriptions: [] })
+    await h.ctx.config.patch({ chats: [] })
     await service.tick()
     expect(h.persisted.size).toBe(0)
   })
@@ -79,7 +83,7 @@ describe("createGitService", () => {
     const sub = row({ events: ["commit"], credential: "private" })
     const grant: GitConfigInput["privateRepositories"][number] = { platform: "github", repo: sub.repo, credential: "private",
       targets: [{ accountId: sub.accountId, scene: sub.scene, targetId: sub.targetId }] }
-    const h = harness({ subscriptions: [sub], credentials: [{ name: "private", platform: "github", token: "secret" }] })
+    const h = harness({ chats: chats(sub), credentials: [{ name: "private", platform: "github", token: "secret" }] })
     const provider = fakeProvider({ commit: [event("old")] })
     provider.metadata = async (_row, token) => { if (!token) throw new GitError("无访问权限", "404"); return { public: false } }
     const service = createGitService(h.ctx, { provider })
@@ -102,25 +106,25 @@ describe("createGitService", () => {
 
   it("新增的事件类型单独建立基线；关掉的类型移除其待发", async () => {
     const sub = row({ events: ["commit"] })
-    const h = harness({ subscriptions: [sub] })
+    const h = harness({ chats: chats(sub) })
     const provider = fakeProvider({ commit: [event("old")], issue: [event("history", "issue", 100)] })
     const service = createGitService(h.ctx, { provider, now: () => 1000 })
     await service.tick()
-    await h.ctx.config.patch({ subscriptions: [{ ...sub, events: ["commit", "issue"] }] })
+    await h.ctx.config.patch({ chats: chats({ ...sub, events: ["commit", "issue"] }) })
     await service.tick()
     expect(h.sent).toHaveLength(0)
     provider.lists.issue.unshift(event("new", "issue", 2000))
     h.bot.online = false
     await service.tick()
     expect((await service.status())[0]?.pending).toBe(1)
-    await h.ctx.config.patch({ subscriptions: [sub] })
+    await h.ctx.config.patch({ chats: chats(sub) })
     await service.tick()
     expect((await service.status())[0]?.pending).toBe(0)
   })
 
   it("GitCode 带认证读公开仓库元数据可用；可读的私有仓库仍需授权", async () => {
     const sub = row({ platform: "gitcode", events: ["commit"] })
-    const h = harness({ subscriptions: [sub], tokens: { gitcode: "secret" } })
+    const h = harness({ chats: chats(sub), tokens: { gitcode: "secret" } })
     const provider = fakeProvider({ commit: [event("baseline")] })
     let isPublic = true
     provider.metadata = async (_row, token) => {
@@ -138,7 +142,7 @@ describe("createGitService", () => {
   })
 
   it("摘要分批投递并保留余量；持久化失败时不发送未落盘的数据", async () => {
-    const h = harness({ subscriptions: [row({ events: ["commit"] })] })
+    const h = harness({ chats: chats(row({ events: ["commit"] })) })
     const provider = fakeProvider({ commit: [event("old")] })
     const service = createGitService(h.ctx, { provider })
     await service.tick()
@@ -160,7 +164,7 @@ describe("createGitService", () => {
   })
 
   it("手动与定时检查共用一把锁；配置变化让过期的发送作废", async () => {
-    const h = harness({ subscriptions: [row({ events: ["commit"] })] })
+    const h = harness({ chats: chats(row({ events: ["commit"] })) })
     const provider = fakeProvider({ commit: [event("old")] })
     const service = createGitService(h.ctx, { provider })
     await service.tick()
@@ -177,9 +181,36 @@ describe("createGitService", () => {
     expect(h.sent).toHaveLength(0)
   })
 
+  it("按会话分组：停用会话暂停其下全部仓库且保留进度；聊天添加并入已有会话；删完仓库只清掉没有备注的会话", async () => {
+    const a = row({ events: ["commit"] }), b = row({ repo: "owner/second", events: ["commit"] })
+    const other = row({ targetId: "456", events: ["commit"] })
+    const config = (enabled: boolean) => [{ ...chats(a, b)[0]!, enabled, remark: "开发群" }, ...chats(other)]
+    const h = harness({ chats: config(true) })
+    const provider = fakeProvider({ commit: [event("old")] })
+    const service = createGitService(h.ctx, { provider })
+    await service.tick()
+    provider.lists.commit.unshift(event("new"))
+    await h.ctx.config.patch({ chats: config(false) })
+    await service.tick()
+    expect(h.sent.map(item => item.target)).toEqual([{ scene: "group", gid: "456" }])
+    expect((await service.status()).map(item => item.row.enabled)).toEqual([false, false, true])
+    await h.ctx.config.patch({ chats: config(true) })
+    await service.tick()
+    expect(h.sent).toHaveLength(3)
+
+    const third = row({ repo: "owner/third" })
+    await service.subscribe(third)
+    await service.update(subscriptionId(b), () => true, { format: "image" })
+    const shape = () => h.ctx.config.get().chats.map(chat => [chat.remark, chat.repos.map(repo => `${repo.repo}:${repo.format}`)])
+    expect(shape()).toEqual([["开发群", ["owner/repo:default", "owner/second:image", "owner/third:default"]], ["", ["owner/repo:default"]]])
+    await service.update(subscriptionId(other), () => true, undefined)
+    for (const sub of [a, b, third]) await service.update(subscriptionId(sub), () => true, undefined)
+    expect(shape()).toEqual([["开发群", []]])
+  })
+
   it("中止的上下文在进行中的检查之后不再发送或修改", async () => {
     const sub = row({ events: ["commit"] })
-    const h = harness({ subscriptions: [sub] })
+    const h = harness({ chats: chats(sub) })
     const provider = fakeProvider({ commit: [event("old")] })
     const service = createGitService(h.ctx, { provider })
     await service.tick()
@@ -193,8 +224,7 @@ describe("createGitService", () => {
 
   it("三个平台的四类动态一起工作：同仓库共用请求，私密条目被过滤", async () => {
     for (const platform of PLATFORM_KEYS) {
-      const subscriptions = [row({ platform }), row({ platform, targetId: "456" })]
-      const h = harness({ subscriptions })
+      const h = harness({ chats: chats(row({ platform }), row({ platform, targetId: "456" })) })
       const data: Record<string, Record<string, unknown>[]> = { commits: [apiCommit("old")], issues: [], pulls: [], releases: [] }
       let calls = 0
       const provider = createProvider({ async request(url) {
@@ -246,6 +276,23 @@ describe("插件入口", () => {
     expect(h.tasks[1]?.disposed).toBe(true)
     await h.ctx.config.patch({ intervalSeconds: 120 })
     expect(h.tasks).toHaveLength(2)
+  })
+})
+
+describe("破坏性配置更新", () => {
+  it("丢弃旧订阅但保留其他设置；不自动建立新会话，清理不再使用的进度与队列", async () => {
+    const sub = row({ events: ["commit"] })
+    const key = `subscription:${subscriptionId(sub)}`
+    const state = { streams: { commit: { initialized: true, head: "old" } }, pending: [event("queued")], lastCheck: 1, error: "", privateAccess: false }
+    const h = harness({ tokens: { github: "configured-token" }, subscriptions: [{ ...sub, remark: "旧备注" }] }, new Map([[key, state]]))
+    await plugin.setup(h.plugin)
+    await (h.services.get("git-plugin") as GitService).idle()
+    expect(h.ctx.config.get().chats).toEqual([])
+    expect(h.ctx.config.get().tokens.github).toBe("configured-token")
+    expect(Object.keys(h.ctx.config.get())).not.toContain("subscriptions")
+    expect(h.persisted.has(key)).toBe(false)
+    expect(h.sent).toHaveLength(0)
+    h.dispose()
   })
 })
 

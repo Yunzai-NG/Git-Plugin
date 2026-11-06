@@ -9,22 +9,28 @@ tokens:
   gitee: ""
   gitcode: ""
 credentials: []
-subscriptions: []
+chats: []
 privateRepositories: []
 
-# 公开仓库推送示例（把 subscriptions: [] 替换为以下列表）：
-# subscriptions:
-#   - enabled: true
-#     remark: Yunzai NG 更新
-#     platform: github
-#     repo: Yunzai-NG/yunzai-ng
-#     branch: ""                  # 空值跟踪默认分支；仅 Commit 使用
-#     events: [commit, release]   # [] 使用 defaultEvents
-#     format: default            # default / text / image
-#     credential: ""             # 空值使用 tokens.github
+# 推送按会话配置：一个群聊或私聊一项，repos 里列出它要接收的仓库。
+# 示例（把 chats: [] 替换为以下列表）：
+# chats:
+#   - enabled: true               # 关闭后此会话下的仓库全部暂停
+#     remark: 开发群
 #     accountId: 替换成NG账号记录UUID
-#     scene: group               # group / private
+#     scene: group                # group / private
 #     targetId: "123456789"       # 群号或用户 ID，始终使用字符串
+#     repos:
+#       - enabled: true
+#         platform: github
+#         repo: Yunzai-NG/yunzai-ng
+#         branch: ""              # 空值跟踪默认分支；仅 Commit 使用
+#         events: [commit, release]  # [] 使用 defaultEvents
+#         format: default         # default / text / image
+#         credential: ""          # 空值使用 tokens.github
+#       - platform: gitee
+#         repo: owner/another
+#         format: image
 
 # 私有仓库需在订阅之外授权对应会话：
 # credentials:
@@ -39,4 +45,4 @@ privateRepositories: []
 #       - accountId: 替换成NG账号记录UUID
 #         scene: group
 #         targetId: "123456789"
-# 对应 subscriptions 项的 repo、credential、accountId、scene、targetId 必须匹配。
+# 对应会话的 repos 里要有这个仓库，credential 一致；会话的 accountId、scene、targetId 也须匹配。

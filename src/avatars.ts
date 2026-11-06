@@ -97,7 +97,7 @@ export function createAvatarLoader(ctx: AvatarContext): AvatarLoader {
     for (const url of new Set([sized(href), href])) {
       try {
         const response = await ctx.http.request(url, { responseType: "buffer", timeout: TIMEOUT, retry: 0,
-          throwOnError: false, followRedirect: false, headers: { "User-Agent": "Yunzai-NG-Git-Plugin/0.2" } })
+          throwOnError: false, followRedirect: false, headers: { "User-Agent": "Yunzai-NG-Git-Plugin/0.3" } })
         if (!response.ok || !(response.data instanceof Uint8Array)) continue
         const bytes = Buffer.from(response.data)
         const mime = bytes.length <= MAX_BYTES ? sniff(bytes) : ""

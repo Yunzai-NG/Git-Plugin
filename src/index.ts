@@ -1,7 +1,7 @@
 /**
  * 模块职责：插件入口 —— 创建服务、注册命令、按配置调度定时检查
  * 依赖方向：`@yunzai-ng/core` 的 definePlugin 与本目录各模块
- * 生命周期：setup 不等待网络；首轮检查异步启动，避免超过加载超时。卸载时取消定时任务与配置监听
+ * 生命周期：setup 不等待网络；首轮检查异步启动，避免超过加载超时。卸载时取消定时任务与配置监听。
  * 注意事项：检查间隔变化时只重建一次定时任务；其余配置变化只触发一次状态同步。
  *          服务以 `git-plugin` 键对外提供，供其他插件查询订阅状态。
  */
@@ -12,7 +12,7 @@ import { createGitService } from "./service.js"
 
 export default definePlugin({
   name: "git-plugin",
-  version: "0.2.0",
+  version: "0.3.0",
   description: "GitHub、Gitee、GitCode 仓库新动态订阅与推送",
   configSchema,
   setup(ctx) {

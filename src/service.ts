@@ -9,7 +9,8 @@
 import type { MessageEvent, PluginContext } from "@yunzai-ng/types"
 import { createAvatarLoader } from "./avatars.js"
 import type { AvatarLoader } from "./avatars.js"
-import type { GitConfig, GitConfigInput, Subscription, SubscriptionInput } from "./config.js"
+import { subscriptionRows } from "./config.js"
+import type { GitConfig, GitConfigInput, RepoSubscriptionInput, Subscription, SubscriptionInput } from "./config.js"
 import { messageContent } from "./display.js"
 import { createProvider } from "./providers.js"
 import type { Provider } from "./providers.js"
@@ -91,6 +92,9 @@ export interface StatusEntry {
   retryAt: number | undefined
 }
 
+/** 可原地修改的订阅字段；平台、仓库、分支决定订阅编号，改它们等于新建订阅 */
+export type RepoPatch = Partial<Omit<RepoSubscriptionInput, "platform" | "repo" | "branch">>
+
 /** 对外提供的服务（服务键 `git-plugin`） */
 export interface GitService {
   /** 执行一轮检查；已有检查在执行时立即返回 busy */
@@ -99,8 +103,8 @@ export interface GitService {
   refresh(): Promise<void>
   /** 验证后保存订阅，返回编号 */
   subscribe(input: SubscriptionInput): Promise<string>
-  /** 修改或删除（patch 为 undefined）订阅 */
-  update(id: string, canManage: (row: Subscription) => boolean, patch: Partial<SubscriptionInput> | undefined): Promise<void>
+  /** 修改或删除（patch 为 undefined）订阅；只能改不影响编号的字段 */
+  update(id: string, canManage: (row: Subscription) => boolean, patch: RepoPatch | undefined): Promise<void>
   /** 订阅状态列表 */
   status(filter?: (row: Subscription) => boolean): Promise<StatusEntry[]>
   /** 命令所在会话对应的机器人账号与目标 */
@@ -142,9 +146,9 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
   let mutations: Promise<unknown> = Promise.resolve()
   let dirty = false
 
-  const rows = () => ctx.config.get().subscriptions
+  const rows = () => subscriptionRows(ctx.config.get())
   const active = (id: string, config: GitConfig) => !ctx.signal.aborted && ctx.config.get() === config && config.enabled &&
-    config.subscriptions.some(row => subscriptionId(row) === id && row.enabled)
+    subscriptionRows(config).some(row => subscriptionId(row) === id && row.enabled)
   const load = async (id: string): Promise<SubState> => structuredClone(await ctx.kv.get<SubState>(`${PREFIX}${id}`) ||
     { streams: {}, pending: [], lastCheck: 0, error: "", privateAccess: false })
 
@@ -169,7 +173,7 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
 
   async function reconcile(): Promise<void> {
     const config = ctx.config.get()
-    const all = new Map(config.subscriptions.map(row => [subscriptionId(row), row]))
+    const all = new Map(subscriptionRows(config).map(row => [subscriptionId(row), row]))
     for await (const key of ctx.kv.keys(PREFIX)) {
       const row = all.get(key.slice(PREFIX.length))
       if (!row) { await ctx.kv.del(key); continue }
@@ -287,7 +291,7 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
     const config = ctx.config.get()
     if (!config.enabled || ctx.signal.aborted) return { disabled: true, results: [] }
     const results: CheckSummary[] = []
-    for (const row of config.subscriptions) {
+    for (const row of subscriptionRows(config)) {
       if (signal?.aborted || ctx.signal.aborted || ctx.config.get() !== config) break
       if (row.enabled && (!ids || ids.includes(subscriptionId(row)))) results.push(await checkRow(row, config, signal))
     }
@@ -318,8 +322,11 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
     return task
   }
 
-  /** 配置里的订阅是只读快照；写回前展开成普通对象 */
-  const writable = () => rows().map(row => ({ ...row, events: [...row.events] }))
+  /** 配置里的会话是只读快照；写回前复制成普通对象 */
+  const writable = () => structuredClone(ctx.config.get().chats) as unknown as GitConfigInput["chats"]
+  /** 会话里某个仓库对应的订阅编号 */
+  const idOf = (chat: Destination, repo: RepoSubscriptionInput) => subscriptionId({ ...repo, accountId: chat.accountId,
+    scene: chat.scene, targetId: chat.targetId })
 
   return {
     tick,
@@ -332,11 +339,17 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
       return mutate(async () => {
         if (ctx.config.get() !== snapshot) throw new GitError("配置刚刚发生变化，请重试订阅命令。", "changed")
         const id = subscriptionId(input)
-        const subscriptions = writable()
-        const index = subscriptions.findIndex(row => subscriptionId(row) === id)
-        if (index < 0) subscriptions.push(input)
-        else subscriptions[index] = { ...subscriptions[index], ...input }
-        await ctx.config.patch({ subscriptions })
+        const { accountId, scene, targetId, ...repo } = input
+        const chats = writable()
+        let chat = chats.find(row => targetKey(row) === targetKey(input))
+        if (!chat) {
+          chat = { enabled: true, remark: "", accountId, scene, targetId, repos: [] }
+          chats.push(chat)
+        }
+        const index = chat.repos.findIndex(row => idOf(input, row) === id)
+        if (index < 0) chat.repos.push(repo)
+        else chat.repos[index] = { ...chat.repos[index], ...repo }
+        await ctx.config.patch({ chats })
         return id
       })
     },
@@ -345,10 +358,12 @@ export function createGitService(ctx: GitContext, options: ServiceOptions = {}):
       return mutate(async () => {
         const row = rows().find(item => subscriptionId(item) === id)
         if (!row || !canManage(row)) throw new GitError("订阅不存在或你没有管理此会话的权限。", "permission")
-        const subscriptions = patch
-          ? writable().map(item => subscriptionId(item) === id ? { ...item, ...patch } : item)
-          : writable().filter(item => subscriptionId(item) !== id)
-        await ctx.config.patch({ subscriptions })
+        const chats = writable().map(chat => ({ ...chat, repos: patch
+          ? chat.repos.map(repo => idOf(chat, repo) === id ? { ...repo, ...patch } : repo)
+          : chat.repos.filter(repo => idOf(chat, repo) !== id) }))
+          // 删掉最后一个仓库时，聊天里建出来的空会话（没有备注）一并移除；面板里写过备注的保留
+          .filter(chat => chat.repos.length || chat.remark)
+        await ctx.config.patch({ chats })
       })
     },
 

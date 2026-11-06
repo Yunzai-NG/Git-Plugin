@@ -12,15 +12,31 @@ import type { EventType, GitEvent } from "./model.js"
 import type { PageOptions, Provider, RepoMetadata } from "./providers.js"
 import type { GitContext } from "./service.js"
 
-/** 一条订阅；未给的字段取 schema 默认值。返回可写形状，便于直接放进 config.patch */
+/** 一条展开后的订阅（一个仓库对一个会话）；未给的字段取 schema 默认值 */
 export function row(patch: Record<string, unknown> = {}): SubscriptionInput {
+  const { accountId = "bot-account", scene = "group", targetId = "123", ...repo } = patch
   const config = configSchema.parse({
-    subscriptions: [{ platform: "github", repo: "owner/repo", accountId: "bot-account", scene: "group", targetId: "123", ...patch }],
+    chats: [{ accountId, scene, targetId, repos: [{ platform: "github", repo: "owner/repo", ...repo }] }],
     credentials: patch.credential ? [{ name: patch.credential, platform: patch.platform || "github", token: "test-token" }] : []
   })
-  const first = config.subscriptions[0]
-  if (!first) throw new Error("row() 未生成订阅")
-  return first
+  const chat = config.chats[0]
+  const first = chat?.repos[0]
+  if (!chat || !first) throw new Error("row() 未生成订阅")
+  return { ...first, accountId: chat.accountId, scene: chat.scene, targetId: chat.targetId }
+}
+
+/** 按会话把订阅分组成配置里的 chats；同一会话的仓库按出现顺序放进同一项 */
+export function chats(...rows: SubscriptionInput[]): GitConfigInput["chats"] {
+  const out: GitConfigInput["chats"] = []
+  for (const { accountId, scene, targetId, ...repo } of rows) {
+    let chat = out.find(item => item.accountId === accountId && item.scene === scene && item.targetId === targetId)
+    if (!chat) {
+      chat = { enabled: true, remark: "", accountId, scene, targetId, repos: [] }
+      out.push(chat)
+    }
+    chat.repos.push(repo)
+  }
+  return out
 }
 
 /** 一条归一化后的动态 */

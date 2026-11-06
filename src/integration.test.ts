@@ -19,7 +19,7 @@ import { createMockAdapter } from "@yunzai-ng/core/testing"
 import type { HttpRequestOptions } from "@yunzai-ng/types"
 import { subscriptionId } from "./model.js"
 import type { GitService } from "./service.js"
-import { apiCommit, row } from "./test-helpers.js"
+import { apiCommit, chats, row } from "./test-helpers.js"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const TOKEN = "local-panel-test-token"
@@ -27,7 +27,7 @@ const TOKEN = "local-panel-test-token"
 /** 面板配置接口的响应体 */
 interface ConfigResponse {
   schema: { properties: { tokens: { properties: { github: { widget: string } } } } }
-  value: { tokens: { github: string }, subscriptions: { targetId: string }[] }
+  value: { tokens: { github: string }, chats: { targetId: string, remark: string, repos: { repo: string, enabled: boolean }[] }[] }
 }
 
 /** 占一个空闲端口再释放，给框架 HTTP 服务用 */
@@ -63,6 +63,18 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     await mkdir(join(home, "config"), { recursive: true })
     await writeFile(join(home, "config/yunzai.yaml"), `store:\n  driver: memory\n  sqlite: false\nbot:\n  masterQQ: ["owner"]\n` +
       `server:\n  enable: true\n  host: 127.0.0.1\n  port: ${port}\n  token: ${TOKEN}\n`)
+    // 破坏性更新：旧 subscriptions 被丢弃，不会自动生成推送会话
+    await writeFile(join(home, "config/git-plugin.yaml"), [
+      "subscriptions:",
+      "  - enabled: true",
+      "    remark: 旧版",
+      "    platform: github",
+      "    repo: owner/legacy",
+      "    accountId: legacy-account",
+      "    scene: group",
+      "    targetId: \"999\"",
+      ""
+    ].join("\n"))
     const destination = join(home, "plugins/Git-Plugin")
     await cp(join(root, "src"), join(destination, "src"), { recursive: true,
       filter: source => !/\.test\.ts$/.test(source) })
@@ -84,8 +96,10 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     const initial = await api("GET", "config/git-plugin")
     expect(initial.status).toBe(200)
     expect(initial.data.schema.properties.tokens.properties.github.widget).toBe("password")
+    expect(initial.data.value.chats).toEqual([])
+    expect(await readFile(join(home, "config/git-plugin.yaml"), "utf8")).not.toMatch(/^subscriptions:/m)
     const sub = row({ accountId: account.id, events: ["commit"] })
-    expect((await api("PATCH", "config/git-plugin", { tokens: { github: "fixture-only-token" }, subscriptions: [sub] })).status).toBe(200)
+    expect((await api("PATCH", "config/git-plugin", { tokens: { github: "fixture-only-token" }, chats: chats(sub) })).status).toBe(200)
     await service.idle()
     expect((await service.status())[0]?.initialized).toBe(true)
     expect(mock.sent).toHaveLength(0)
@@ -97,7 +111,7 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     expect(requests.every(url => /^https:\/\/(api\.github\.com|gitee\.com|api\.gitcode\.com)\//.test(url))).toBe(true)
 
     // 面板改样式、间隔不丢 Token，也不重建游标；没有渲染器时退回文字
-    expect((await api("PATCH", "config/git-plugin", { intervalSeconds: 60, subscriptions: [{ ...sub, format: "image" }] })).status).toBe(200)
+    expect((await api("PATCH", "config/git-plugin", { intervalSeconds: 60, chats: chats({ ...sub, format: "image" }) })).status).toBe(200)
     await service.idle()
     expect((await api("GET", "config/git-plugin")).data.value.tokens.github).toBe("fixture-only-token")
     expect(mock.sent).toHaveLength(1)
@@ -120,9 +134,10 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     await mock.waitForSend(4)
     await service.idle()
     expect(mock.last()?.text).toMatch(/订阅已保存/)
-    const list = (await api("GET", "config/git-plugin")).data.value.subscriptions
+    const list = (await api("GET", "config/git-plugin")).data.value.chats
     expect(list).toHaveLength(2)
     expect(list[1]?.targetId).toBe("456")
+    expect(list[1]?.repos.map(item => item.repo)).toEqual(["owner/another"])
     expect(await readFile(join(home, "config/git-plugin.yaml"), "utf8")).toMatch(/another/)
     expect(mock.texts.join("\n")).not.toContain("fixture-only-token")
 
@@ -138,11 +153,11 @@ it("真实 NG：面板配置、聊天权限、持久化、重载与模拟推送"
     service = app.services.get<GitService>("git-plugin")!
     await service.idle()
     expect((await service.status())[0]?.initialized).toBe(true)
-    await api("PATCH", "config/git-plugin", { enabled: true, subscriptions: [sub] })
+    await api("PATCH", "config/git-plugin", { enabled: true, chats: chats(sub) })
     await service.idle()
     expect(mock.sent).toHaveLength(5)
     expect(mock.last()?.text).toMatch(/while-paused/)
-    await api("PATCH", "config/git-plugin", { subscriptions: [], tokens: { github: "" } })
+    await api("PATCH", "config/git-plugin", { chats: [], tokens: { github: "" } })
     await service.idle()
     expect(await service.status()).toEqual([])
     expect((await api("GET", "config/git-plugin")).data.value.tokens.github).toBe("")

@@ -190,7 +190,7 @@ export function createProvider(http: ProviderHttp, { now = Date.now }: { now?: (
     const cached = cache.get(cacheKey)
     if (cached) return cached
     const promise = (async () => {
-      const headers: Record<string, string> = { Accept: "application/json", "User-Agent": "Yunzai-NG-Git-Plugin/0.2" }
+      const headers: Record<string, string> = { Accept: "application/json", "User-Agent": "Yunzai-NG-Git-Plugin/0.3" }
       if (token) headers.Authorization = `Bearer ${token}`
       if (row.platform === "github") headers["X-GitHub-Api-Version"] = "2022-11-28"
       const url = `${PLATFORMS[row.platform].api}/repos/${row.repo.split("/").map(encodeURIComponent).join("/")}${suffix}`
