@@ -26,7 +26,7 @@ const MAX_PENDING = 20_000
 const retryOf = (error: unknown) => error instanceof GitError ? error.retryAt : 0
 
 /** 服务需要的插件能力，`PluginContext` 满足它 */
-export type GitContext = Pick<PluginContext<GitConfigInput>, "signal" | "kv" | "config" | "app" | "logger" | "render" | "http" | "cache">
+export type GitContext = Pick<PluginContext<GitConfigInput>, "version" | "signal" | "kv" | "config" | "app" | "logger" | "render" | "http" | "cache">
 
 /** 一条订阅在 KV 里的状态 */
 export interface SubState {

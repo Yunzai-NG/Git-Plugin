@@ -96,7 +96,7 @@ const svg = (paths: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="cur
 const zoned = (time: number) => Object.fromEntries(new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit",
   day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(time)).map(part => [part.type, part.value]))
 
-/** 卡片里的短时间：今年省略年份，不显示秒；全卡统一 UTC+8，页脚注明 */
+/** 卡片里的短时间：今年省略年份，不显示秒；全卡统一 UTC+8 */
 function shortDate(time: number, now: number): string {
   if (!Number.isFinite(time) || time <= 0) return "时间未知"
   const at = zoned(time)
@@ -132,6 +132,10 @@ export interface CardOptions {
   now?: number
   /** 头像地址 → data URI；缺失的显示首字母 */
   avatars?: ReadonlyMap<string, string>
+  /** 运行中的插件版本；未提供时显示未知 */
+  pluginVersion?: string
+  /** 运行中的 Yunzai NG 内核版本；未提供时显示未知 */
+  frameworkVersion?: string
 }
 
 /**
@@ -142,10 +146,12 @@ export interface CardOptions {
  * 四种类型各有一套颜色，扫一眼即可分辨。
  * @param row 订阅
  * @param events 本批动态
- * @param options 当前时间与头像
+ * @param options 当前时间、头像与运行版本
  * @returns 可交给 ctx.render 的页面
  */
-export function cardPage(row: DisplayRow, events: readonly GitEvent[], { now = Date.now(), avatars = new Map() }: CardOptions = {}): RenderablePage {
+export function cardPage(row: DisplayRow, events: readonly GitEvent[], {
+  now = Date.now(), avatars = new Map(), pluginVersion = "未知", frameworkVersion = "未知"
+}: CardOptions = {}): RenderablePage {
   const [owner = "", ...rest] = row.repo.split("/")
   const types = (Object.keys(kinds) as EventType[]).filter(type => events.some(event => event.type === type))
   // 只有一种类型时右上角的总数已经够用，不再重复一行统计。
@@ -218,12 +224,16 @@ export function cardPage(row: DisplayRow, events: readonly GitEvent[], { now = D
       ${stats}
     </header>
     ${events.length ? `<ol>${items}</ol>` : "<section class=\"empty\"><h2>暂无新增动态</h2><p>本次没有可展示的仓库更新。</p></section>"}
-    <footer><b>Git-Plugin</b><span>时间为 UTC+8 · 链接见图片下方文字</span></footer>
+    <footer><b>Git-Plugin v${escape(pluginVersion)}</b><span>Yunzai NG v${escape(frameworkVersion)}</span></footer>
     </main></body></html>` }
 }
 
 /** 生成推送内容所需的插件能力，`PluginContext` 满足它 */
 export interface DisplayContext {
+  /** 运行中的插件版本 */
+  readonly version: string
+  /** 内核只读视图，仅使用运行版本 */
+  readonly app: { readonly version: string }
   /** 本插件日志器 */
   readonly logger: Pick<Logger, "warn">
   /** 渲染页面为图片段 */
@@ -251,7 +261,9 @@ export async function messageContent(ctx: DisplayContext, row: DisplayRow, confi
   if (format === "image") {
     const pictures = avatars ? await avatars.load(events).catch(() => new Map<string, string>()) : new Map<string, string>()
     try {
-      const image = await ctx.render(cardPage(row, events, { avatars: pictures }),
+      const image = await ctx.render(cardPage(row, events, {
+        avatars: pictures, pluginVersion: ctx.version, frameworkVersion: ctx.app.version
+      }),
         { type: "png", viewport: { width: CARD_WIDTH, scale: CARD_SCALE }, timeout: 15_000 })
       return [image, events.map(event => `${labels[event.type]} ${code(event)} ${event.url}`).join("\n")]
     } catch {

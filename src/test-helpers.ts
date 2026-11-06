@@ -73,6 +73,7 @@ export function harness(input: Record<string, unknown> = {}, persisted = new Map
   const controller = new AbortController()
   const bot: FakeBot = { online: true, async sendMessage(target, content) { sent.push({ target, content }); return { ok: true } } }
   const fake = {
+    version: "0.3.1",
     signal: controller.signal,
     kv: {
       async get(key: string) { return structuredClone(persisted.get(key)) },
@@ -90,6 +91,7 @@ export function harness(input: Record<string, unknown> = {}, persisted = new Map
       onChange(listener: (change: { next: unknown }) => void) { listeners.add(listener); return () => { listeners.delete(listener) } }
     },
     app: {
+      version: "0.7.1",
       bots: { get: (id: string) => id === "bot-account" ? bot : undefined },
       accounts: { list: () => [{ record: { id: "bot-account", adapterId: "mock", selfId: "bot" }, status: "online" }] }
     },

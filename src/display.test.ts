@@ -10,6 +10,34 @@ const commit = (): GitEvent => ({ ...event("abcdef0123456789"), title: "feat!: �
       { filename: "src/new.ts", previousFilename: "src/old.ts", additions: 0, deletions: 0 }] } })
 
 describe("Commit 推送卡片", () => {
+  it("底栏只保留插件和内核版本，空卡片同样显示，版本文字经过转义", () => {
+    const options = { pluginVersion: "1.2.3", frameworkVersion: "9.8.7" }
+    for (const events of [[commit()], []]) {
+      const html = cardPage(row(), events, options).html
+      expect(html).toContain('<footer><b>Git-Plugin v1.2.3</b><span>Yunzai NG v9.8.7</span></footer>')
+      expect(html).not.toContain("时间为 UTC+8")
+      expect(html).not.toContain("链接见图片下方文字")
+    }
+    const escaped = cardPage(row(), [], { pluginVersion: '<script>"', frameworkVersion: "<img>" }).html
+    expect(escaped).toContain('Git-Plugin v&lt;script&gt;&quot;')
+    expect(escaped).toContain("Yunzai NG v&lt;img&gt;")
+    expect(escaped).not.toContain("<script>")
+  })
+
+  it("图片推送底栏使用上下文中的实际运行版本，不写死版本号", async () => {
+    const h = harness()
+    h.fake.version = "1.2.3"
+    h.fake.app.version = "9.8.7"
+    let html = ""
+    h.fake.render = async page => {
+      html = (page as { html: string }).html
+      return { type: "image", file: { kind: "buffer", data: Buffer.from("png") } }
+    }
+    const content = await messageContent(h.ctx, row({ format: "image" }), h.ctx.config.get(), [commit()])
+    expect(Array.isArray(content)).toBe(true)
+    expect(html).toContain('<footer><b>Git-Plugin v1.2.3</b><span>Yunzai NG v9.8.7</span></footer>')
+  })
+
   it("标题与多行正文分开；展示总增删行数、逐文件明细、重命名与剩余文件提示", () => {
     const html = cardPage(row(), [commit()]).html
     expect(html).toContain('<h2 class="title">feat!: 标题不混进正文</h2>')
